@@ -77,9 +77,11 @@ export function pickKeyword(fileName: string, folder: string, files: Row[]): Omi
 
 /** 手動搬移後呼叫：符合條件就新增或更新一筆規則建議 */
 export async function learnFromMove(env: Env, fileId: number): Promise<Suggestion | null> {
-  const file = await env.DB.prepare('SELECT id, original_name, folder_path, manual, group_id, storage_id, received_at FROM files WHERE id = ?')
+  const file = await env.DB.prepare('SELECT id, original_name, folder_path, manual, group_id, storage_id, received_at, message_type FROM files WHERE id = ?')
     .bind(fileId)
-    .first<Row & { group_id: string; storage_id: number; received_at: string }>();
+    .first<Row & { group_id: string; storage_id: number; received_at: string; message_type: string }>();
+  // 照片、影片的檔名是系統產生的，學不到有意義的關鍵字
+  if (file && file.message_type !== 'file') return null;
   if (!file?.folder_path || file.folder_path.startsWith('待分類') || file.folder_path.startsWith('_重複檔案')) return null;
 
   // 已經有規則會放到這裡就不用再建議
@@ -104,6 +106,10 @@ export async function learnFromMove(env: Env, fileId: number): Promise<Suggestio
        examples = excluded.examples, updated_at = datetime('now')`,
   )
     .bind(pick.pattern, targetPath, file.storage_id, pick.support, pick.conflicts, JSON.stringify(pick.examples))
+    .run();
+  // 同一個資料夾只保留最有把握的建議，避免一次跳出好幾條
+  await env.DB.prepare("DELETE FROM rule_suggestions WHERE status = 'open' AND target_path = ? AND pattern != ? AND support <= ?")
+    .bind(targetPath, pick.pattern, pick.support)
     .run();
   return { ...pick, targetPath };
 }

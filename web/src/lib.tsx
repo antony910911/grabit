@@ -1,21 +1,55 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 
 // ---------- 路由（不用額外套件） ----------
+// 網址存在記憶體裡；能改瀏覽器網址就順便改（展示頁面在受限的 iframe 裡可能不允許）
+let virtualUrl = location.pathname + location.search;
+
+export function currentUrl(): URL {
+  return new URL(virtualUrl, 'https://grabit.local');
+}
+
+function emit() {
+  window.dispatchEvent(new Event('grabit-nav'));
+}
+
 export function usePath(): string {
-  const [path, setPath] = useState(location.pathname);
+  const [path, setPath] = useState(currentUrl().pathname);
   useEffect(() => {
-    const on = () => setPath(location.pathname);
-    window.addEventListener('popstate', on);
-    return () => window.removeEventListener('popstate', on);
+    const onPop = () => {
+      virtualUrl = location.pathname + location.search;
+      setPath(currentUrl().pathname);
+    };
+    const onNav = () => setPath(currentUrl().pathname);
+    window.addEventListener('popstate', onPop);
+    window.addEventListener('grabit-nav', onNav);
+    return () => {
+      window.removeEventListener('popstate', onPop);
+      window.removeEventListener('grabit-nav', onNav);
+    };
   }, []);
   return path;
 }
 
 export function navigate(to: string) {
-  if (to === location.pathname + location.search) return;
-  history.pushState(null, '', to);
-  window.dispatchEvent(new PopStateEvent('popstate'));
+  if (to === virtualUrl) return;
+  virtualUrl = to;
+  try {
+    history.pushState(null, '', to);
+  } catch {
+    // 忽略：只用記憶體裡的網址
+  }
+  emit();
   window.scrollTo(0, 0);
+}
+
+/** 更新網址但不新增瀏覽紀錄（例如篩選條件） */
+export function replaceUrl(to: string) {
+  virtualUrl = to;
+  try {
+    history.replaceState(null, '', to);
+  } catch {
+    // 忽略
+  }
 }
 
 export function Link({ to, className, children }: { to: string; className?: string; children: ReactNode }) {
@@ -35,16 +69,20 @@ export function Link({ to, className, children }: { to: string; className?: stri
 }
 
 // ---------- 提示訊息 ----------
-type ToastFn = (msg: string, kind?: 'ok' | 'error') => void;
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+type ToastFn = (msg: string, kind?: 'ok' | 'error', action?: ToastAction) => void;
 const ToastCtx = createContext<ToastFn>(() => {});
 export const useToast = () => useContext(ToastCtx);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toast, setToast] = useState<{ msg: string; kind: 'ok' | 'error'; id: number } | null>(null);
-  const show = useCallback<ToastFn>((msg, kind = 'ok') => setToast({ msg, kind, id: Date.now() }), []);
+  const [toast, setToast] = useState<{ msg: string; kind: 'ok' | 'error'; id: number; action?: ToastAction } | null>(null);
+  const show = useCallback<ToastFn>((msg, kind = 'ok', action) => setToast({ msg, kind, id: Date.now(), action }), []);
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), toast.kind === 'error' ? 5000 : 2600);
+    const t = setTimeout(() => setToast(null), toast.kind === 'error' ? 5000 : toast.action ? 7000 : 2600);
     return () => clearTimeout(t);
   }, [toast]);
   return (
@@ -52,7 +90,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       {toast && (
         <div className={`toast ${toast.kind === 'error' ? 'error' : ''}`} role="status">
-          {toast.msg}
+          <span>{toast.msg}</span>
+          {toast.action && (
+            <button
+              className="toast-action"
+              onClick={() => {
+                toast.action!.onClick();
+                setToast(null);
+              }}
+            >
+              {toast.action.label}
+            </button>
+          )}
         </div>
       )}
     </ToastCtx.Provider>
@@ -107,6 +156,39 @@ export function formatTime(iso: string | null | undefined): string {
   if (d.toDateString() === y.toDateString()) return `昨天 ${time}`;
   const sameYear = d.getFullYear() === now.getFullYear();
   return d.toLocaleDateString('zh-TW', { year: sameYear ? undefined : 'numeric', month: 'numeric', day: 'numeric' }) + ` ${time}`;
+}
+
+export function useMe() {
+  return useContext(MeCtx);
+}
+export const MeCtx = createContext<import('./api').Me | null>(null);
+
+export function canEdit(me: import('./api').Me | null) {
+  return !!me && me.role !== 'viewer';
+}
+
+/** 依行比對兩段文字（簡單 LCS），用於版本比對 */
+export function lineDiff(a: string, b: string): { type: 'same' | 'add' | 'del'; text: string }[] {
+  const A = a.split('\n').slice(0, 400);
+  const B = b.split('\n').slice(0, 400);
+  const n = A.length;
+  const m = B.length;
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i]![j] = A[i] === B[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
+  const out: { type: 'same' | 'add' | 'del'; text: string }[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) {
+      out.push({ type: 'same', text: A[i]! });
+      i++;
+      j++;
+    } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) out.push({ type: 'del', text: A[i++]! });
+    else out.push({ type: 'add', text: B[j++]! });
+  }
+  while (i < n) out.push({ type: 'del', text: A[i++]! });
+  while (j < m) out.push({ type: 'add', text: B[j++]! });
+  return out;
 }
 
 export function fileKind(ext: string, type?: string): { cls: string; label: string } {

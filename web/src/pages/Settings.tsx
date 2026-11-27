@@ -1,31 +1,42 @@
-import { useEffect, useMemo, useState } from 'react';
-import { api, type Settings } from '../api';
-import { ErrorBox, Icon, Loading } from '../components';
-import { Link, useLoad, useToast } from '../lib';
+import { useEffect, useState, type ReactNode } from 'react';
+import { api } from '../api';
+import { ErrorBox, Loading, Switch } from '../components';
+import { Link, useLoad, useMe, useToast } from '../lib';
 
-function Check({ ok, children }: { ok: boolean; children: React.ReactNode }) {
+interface SettingsResp {
+  webhookUrl: string;
+  lineConfigured: boolean;
+  queueEnabled: boolean;
+  timezone: string;
+  aiKeyConfigured: boolean;
+  aiModel: string;
+  aiEnabled: boolean;
+  aiThreshold: number;
+  fullText: boolean;
+  semantic: boolean;
+  outgoingWebhook: string;
+  outgoingWebhookSecretSet: boolean;
+  emailAllowedSenders: string;
+  oauthRedirects: { type: string; label: string; uri: string; configured: boolean }[];
+}
+
+function Check({ ok, children, optional }: { ok: boolean; children: ReactNode; optional?: boolean }) {
   return (
     <li className="row" style={{ padding: '6px 0', flexWrap: 'nowrap', alignItems: 'flex-start' }}>
-      <span className={`badge ${ok ? 'ok' : 'warn'}`}>{ok ? '完成' : '待設定'}</span>
+      <span className={`badge ${ok ? 'ok' : optional ? 'muted' : 'warn'}`}>{ok ? '完成' : optional ? '選用' : '待設定'}</span>
       <span className="grow">{children}</span>
     </li>
   );
 }
 
-function Copy({ text }: { text: string }) {
+export function Copy({ text }: { text: string }) {
   const toast = useToast();
   return (
     <div className="row" style={{ flexWrap: 'nowrap', marginTop: 6 }}>
-      <code className="grow" style={{ padding: '8px 10px' }}>{text}</code>
-      <button
-        className="btn sm"
-        onClick={() =>
-          navigator.clipboard
-            .writeText(text)
-            .then(() => toast('已複製'))
-            .catch(() => toast('無法複製，請手動選取', 'error'))
-        }
-      >
+      <code className="grow" style={{ padding: '8px 10px' }}>
+        {text}
+      </code>
+      <button className="btn sm" onClick={() => navigator.clipboard.writeText(text).then(() => toast('已複製')).catch(() => toast('無法複製，請手動選取', 'error'))}>
         複製
       </button>
     </div>
@@ -34,107 +45,113 @@ function Copy({ text }: { text: string }) {
 
 export function SettingsPage() {
   const toast = useToast();
-  const { data: s, error, loading, reload } = useLoad(() => api<Settings>('/settings'), []);
-  const [root, setRoot] = useState('');
-  const flash = useMemo(() => new URLSearchParams(location.search), []);
+  const me = useMe();
+  const { data: s, error, loading, reload } = useLoad(() => api<SettingsResp>('/settings'), []);
+  const [form, setForm] = useState({ aiThreshold: 0.7, outgoingWebhook: '', outgoingWebhookSecret: '', emailAllowedSenders: '' });
 
   useEffect(() => {
-    if (s) setRoot(s.rootFolder);
+    if (s) setForm({ aiThreshold: s.aiThreshold, outgoingWebhook: s.outgoingWebhook, outgoingWebhookSecret: '', emailAllowedSenders: s.emailAllowedSenders });
   }, [s]);
 
-  useEffect(() => {
-    if (flash.get('drive') === 'connected') toast('Google Drive 連接成功');
-    if (flash.get('drive') === 'error') toast(`Google Drive 連接失敗：${flash.get('message') ?? ''}`, 'error');
-    if (flash.get('drive')) history.replaceState(null, '', '/settings');
-  }, [flash, toast]);
+  if (me && me.role !== 'admin') return <div className="notice warn">只有管理員可以修改系統設定。</div>;
 
-  const saveRoot = async () => {
+  const save = async (patch: Record<string, unknown>, msg = '已儲存') => {
     try {
-      await api('/settings', { method: 'PUT', json: { rootFolder: root } });
-      toast('已更新根目錄');
+      await api('/settings', { method: 'PUT', json: patch });
+      toast(msg);
       reload();
     } catch (e) {
       toast((e as Error).message, 'error');
     }
   };
 
-  const disconnect = async () => {
-    if (!confirm('中斷後，新檔案會停在「處理中」直到重新連接。確定中斷？')) return;
-    await api('/drive/disconnect', { method: 'POST' });
-    toast('已中斷 Google Drive');
-    reload();
-  };
-
   return (
     <>
       <div className="page-head">
         <div>
-          <h1>設定</h1>
-          <p>雲端空間與 LINE 連線</p>
+          <h1>系統設定</h1>
+          <p>LINE 連線、AI、Email 收件與外部整合</p>
         </div>
-        <Link to="/logs" className="btn sm mobile-only">
-          處理紀錄
-        </Link>
       </div>
       {error && <ErrorBox message={error} onRetry={reload} />}
       {loading && !s && <Loading />}
       {s && (
         <div className="stack">
           <section className="card card-pad">
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <h2>Google Drive</h2>
-              {s.driveConnected ? <span className="badge ok">已連接</span> : <span className="badge warn">未連接</span>}
-            </div>
-            <p className="muted small">
-              {s.driveConnected
-                ? `檔案會存到 ${s.googleEmail ?? '你的 Google 帳號'} 的「我的雲端硬碟 / ${s.rootFolder}」。`
-                : '連接後，收到的檔案會自動上傳到你的 Google Drive。系統只能存取它自己建立的檔案，看不到你雲端硬碟裡的其他內容。'}
-            </p>
-            <div className="row">
-              <a className="btn primary" href="/oauth/google/start">
-                <Icon name="external" />
-                {s.driveConnected ? '重新連接／換帳號' : '連接 Google Drive'}
-              </a>
-              {s.driveConnected && (
-                <button className="btn danger" onClick={disconnect}>
-                  中斷連接
-                </button>
-              )}
-            </div>
-            {!s.googleConfigured && (
-              <div className="notice warn" style={{ marginTop: 12, marginBottom: 0 }}>
-                伺服器尚未設定 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET，請參考 README。
-              </div>
-            )}
-            <label className="field" style={{ marginTop: 18 }}>
-              <span>根目錄名稱</span>
-              <div className="row" style={{ flexWrap: 'nowrap' }}>
-                <input className="input grow" value={root} onChange={(e) => setRoot(e.target.value)} />
-                <button className="btn" disabled={!root.trim() || root === s.rootFolder} onClick={saveRoot}>
-                  儲存
-                </button>
-              </div>
-              <small>只影響之後收到的檔案，已歸檔的檔案不會移動</small>
-            </label>
+            <h2>LINE 連線</h2>
+            <p className="muted small">把下面的網址貼到 LINE Developers → Messaging API → Webhook URL，並開啟「Use webhook」。一個 Bot 可以加入多個群組。</p>
+            <Copy text={s.webhookUrl} />
           </section>
 
           <section className="card card-pad">
-            <h2>LINE 連線</h2>
-            <p className="muted small">把下面的網址貼到 LINE Developers → Messaging API → Webhook URL，並開啟「Use webhook」。</p>
-            <Copy text={s.webhookUrl} />
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <h2>AI 文件判讀</h2>
+              <Switch checked={s.aiEnabled} onChange={(v) => save({ aiEnabled: v }, v ? 'AI 已開啟' : 'AI 已關閉')} label="AI" />
+            </div>
+            <p className="muted small">
+              AI 會讀取檔案內容（PDF、Word、Excel、簡報、圖片），產生摘要與標籤；檔名規則判斷不了時，再由 AI 建議資料夾。模型：{s.aiModel}
+              {!s.aiKeyConfigured && '（尚未設定 ANTHROPIC_API_KEY，AI 功能不會執行）'}
+            </p>
+            <label className="field">
+              <span>
+                AI 自動歸檔的把握度門檻：{Math.round(form.aiThreshold * 100)}%
+              </span>
+              <input type="range" min={0.5} max={0.95} step={0.05} value={form.aiThreshold} onChange={(e) => setForm({ ...form, aiThreshold: Number(e.target.value) })} onMouseUp={() => save({ aiThreshold: form.aiThreshold })} onTouchEnd={() => save({ aiThreshold: form.aiThreshold })} />
+              <small>低於門檻的檔案留在「待分類」，並顯示 AI 的建議讓你一鍵採用</small>
+            </label>
+            <p className="muted small" style={{ marginBottom: 0 }}>
+              搜尋：{s.fullText ? '全文搜尋已啟用' : '一般搜尋'}
+              {s.semantic ? '，語意搜尋已啟用' : '，語意搜尋未啟用（需要 Workers AI 與 Vectorize，見 README）'}
+            </p>
+          </section>
+
+          <section className="card card-pad">
+            <h2>Email 收件（選用）</h2>
+            <p className="muted small">設定 Cloudflare Email Routing 後，寄到指定信箱的附件會自動歸檔（例如廠商寄來的報價單）。只接受下列寄件者：</p>
+            <label className="field">
+              <span>允許的寄件者</span>
+              <input className="input" value={form.emailAllowedSenders} onChange={(e) => setForm({ ...form, emailAllowedSenders: e.target.value })} placeholder="me@example.com, @lab.example.com" />
+              <small>多個用逗號分隔；@ 開頭代表整個網域</small>
+            </label>
+            <button className="btn sm" onClick={() => save({ emailAllowedSenders: form.emailAllowedSenders })}>
+              儲存
+            </button>
+          </section>
+
+          <section className="card card-pad">
+            <h2>外部整合 Webhook（選用）</h2>
+            <p className="muted small">每次歸檔、搬移、刪除時，把檔案資訊 POST 到這個網址，可以串接 Folio、ProjectDeck 或其他系統。請求帶有 X-GrabIt-Signature（HMAC-SHA256）。</p>
+            <label className="field">
+              <span>網址</span>
+              <input className="input" value={form.outgoingWebhook} onChange={(e) => setForm({ ...form, outgoingWebhook: e.target.value })} placeholder="https://..." />
+            </label>
+            <label className="field">
+              <span>簽章密鑰</span>
+              <input className="input" type="password" value={form.outgoingWebhookSecret} onChange={(e) => setForm({ ...form, outgoingWebhookSecret: e.target.value })} placeholder={s.outgoingWebhookSecretSet ? '已設定（留空 = 不變）' : '自訂一組隨機字串'} autoComplete="new-password" />
+            </label>
+            <button className="btn sm" onClick={() => save({ outgoingWebhook: form.outgoingWebhook, ...(form.outgoingWebhookSecret ? { outgoingWebhookSecret: form.outgoingWebhookSecret } : {}) })}>
+              儲存
+            </button>
           </section>
 
           <section className="card card-pad">
             <h2>設定檢查</h2>
             <ul className="list" style={{ marginTop: 8 }}>
               <Check ok={s.lineConfigured}>LINE Channel secret 與 access token</Check>
-              <Check ok={s.googleConfigured}>Google OAuth 用戶端（Client ID / Secret）</Check>
-              <Check ok={s.driveConnected}>已授權 Google Drive</Check>
               <Check ok={s.queueEnabled}>Cloudflare Queue（處理失敗時自動重試）</Check>
+              <Check ok={s.aiKeyConfigured} optional>
+                AI（ANTHROPIC_API_KEY）
+              </Check>
+              <Check ok={s.semantic} optional>
+                語意搜尋（Workers AI + Vectorize）
+              </Check>
+              {s.oauthRedirects.map((o) => (
+                <Check key={o.type} ok={o.configured} optional>
+                  {o.label} OAuth 用戶端，重新導向網址：<code>{o.uri}</code>
+                </Check>
+              ))}
             </ul>
-            <p className="muted small" style={{ marginBottom: 4 }}>Google OAuth 的「已授權的重新導向 URI」請填：</p>
-            <Copy text={s.oauthRedirectUri} />
-            <p className="muted small">日期變數時區：{s.timezone}</p>
+            <p className="muted small">日期變數時區：{s.timezone}。雲端空間請到 <Link to="/storages">雲端設定</Link>。</p>
           </section>
 
           <section className="card card-pad">

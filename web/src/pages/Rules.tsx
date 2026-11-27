@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { api, type Group, type Rule } from '../api';
+import { api, type Group, type Project, type Rule, type Suggestion } from '../api';
 import { ErrorBox, Icon, Loading, Sheet, Switch } from '../components';
-import { useLoad, useToast } from '../lib';
+import { canEdit, useLoad, useMe, useToast } from '../lib';
 
 const MATCH_LABEL: Record<Rule['match_type'], string> = {
   keywords: '檔名包含關鍵字',
@@ -15,7 +15,55 @@ const NAME_VARS = ['{yyyyMMdd}', '{name}', '{sender}', '{group}', '{HHmmss}'];
 
 type Draft = Omit<Rule, 'id' | 'enabled'> & { id?: number; enabled: boolean };
 
-const EMPTY: Draft = { name: '', priority: 100, match_type: 'keywords', pattern: '', group_id: null, target_path: '', rename_template: null, enabled: true };
+const EMPTY: Draft = { name: '', priority: 100, match_type: 'keywords', pattern: '', group_id: null, target_path: '', rename_template: null, enabled: true, project_id: null, tags: null };
+
+function Suggestions({ onAccepted }: { onAccepted: () => void }) {
+  const toast = useToast();
+  const { data, reload } = useLoad(() => api<{ items: Suggestion[] }>('/suggestions'), []);
+  if (!data?.items.length) return null;
+  const act = async (s: Suggestion, kind: 'accept' | 'dismiss') => {
+    try {
+      await api(`/suggestions/${s.id}/${kind}`, { method: 'POST', json: {} });
+      toast(kind === 'accept' ? '已建立規則' : '已略過');
+      reload();
+      if (kind === 'accept') onAccepted();
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
+  };
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="card-head">
+        <h2>
+          <span style={{ display: 'inline-block', width: 18, height: 18, verticalAlign: -3, color: 'var(--accent)' }}>
+            <Icon name="ai" />
+          </span>{' '}
+          從你的整理學到的規則
+        </h2>
+      </div>
+      <ul className="list">
+        {data.items.map((s) => (
+          <li key={s.id} className="rule-line">
+            <div className="grow">
+              <div>
+                檔名含「<strong>{s.pattern}</strong>」→ <strong>{s.target_path}</strong>
+              </div>
+              <div className="muted small">
+                依據你手動搬移的 {s.support} 個檔案{s.conflicts ? `（另有 ${s.conflicts} 個放在別處）` : ''}：{s.examples.slice(0, 3).join('、')}
+              </div>
+            </div>
+            <button className="btn sm" onClick={() => act(s, 'dismiss')}>
+              略過
+            </button>
+            <button className="btn sm primary" onClick={() => act(s, 'accept')}>
+              建立規則
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function groupLabel(groups: Group[] | undefined, id: string | null) {
   if (!id) return '不限群組';
@@ -25,6 +73,8 @@ function groupLabel(groups: Group[] | undefined, id: string | null) {
 
 export function Rules() {
   const toast = useToast();
+  const me = useMe();
+  const editable = canEdit(me);
   const rules = useLoad(() => api<{ items: Rule[] }>('/rules'), []);
   const groups = useLoad(() => api<{ items: Group[] }>('/groups'), []);
   const [editing, setEditing] = useState<Draft | null>(null);
@@ -61,7 +111,7 @@ export function Rules() {
           <h1>分類規則</h1>
           <p>由上而下比對，第一條符合的規則決定存放位置</p>
         </div>
-        <div className="row">
+        {editable && <div className="row">
           <button className="btn sm" onClick={() => setReapply(true)}>
             重新套用規則
           </button>
@@ -69,8 +119,9 @@ export function Rules() {
             <Icon name="plus" />
             新增規則
           </button>
-        </div>
+        </div>}
       </div>
+      {editable && <Suggestions onAccepted={rules.reload} />}
 
       <div className="grid-2">
         <div className="card">
@@ -106,7 +157,10 @@ export function Rules() {
                         {r.match_type === 'any' ? MATCH_LABEL.any : `${MATCH_LABEL[r.match_type]}：${r.pattern}`}
                         {r.group_id ? ` · ${groupLabel(groups.data?.items, r.group_id)}` : ''}
                       </div>
-                      <div className="meta">→ {r.target_path}</div>
+                      <div className="meta">
+                        → {r.target_path}
+                        {r.tags ? ` · #${r.tags}` : ''}
+                      </div>
                     </div>
                   </button>
                   <Switch checked={!!r.enabled} onChange={(v) => toggle(r, v)} label={`啟用「${r.name}」`} />
@@ -141,6 +195,9 @@ interface TestResult {
   rule: { id: number; name: string } | null;
   fullPath: string;
   unsorted: boolean;
+  storage: string;
+  project: string | null;
+  tags: string[];
 }
 
 function Simulator({ groups, draft, compact, fixedGroupId }: { groups: Group[]; draft?: Draft; compact?: boolean; fixedGroupId?: string | null }) {
@@ -193,7 +250,13 @@ function Simulator({ groups, draft, compact, fixedGroupId }: { groups: Group[]; 
             {result.unsorted ? <span className="badge warn">沒有規則符合</span> : <span className="badge ok">成功比對</span>}
           </div>
           <div className="path">{result.fullPath}</div>
-          {result.rule && <div className="muted small" style={{ marginTop: 4 }}>觸發規則：{result.rule.name}</div>}
+          <div className="muted small" style={{ marginTop: 4 }}>
+            空間：{result.storage}
+            {result.rule ? ` · 觸發規則：${result.rule.name}` : ''}
+            {result.project ? ` · 專案：${result.project}` : ''}
+            {result.tags.length ? ` · 標籤：${result.tags.join('、')}` : ''}
+          </div>
+          {result.unsorted && <div className="muted small">若有啟用 AI，實際收到檔案時會再讀取內容判斷</div>}
         </div>
       )}
     </div>
@@ -202,6 +265,7 @@ function Simulator({ groups, draft, compact, fixedGroupId }: { groups: Group[]; 
 
 function RuleEditor({ draft, groups, onClose, onSaved }: { draft: Draft; groups: Group[]; onClose: () => void; onSaved: () => void }) {
   const toast = useToast();
+  const projects = useLoad(() => api<{ items: Project[] }>('/projects'), []);
   const [d, setD] = useState<Draft>(draft);
   const [busy, setBusy] = useState(false);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setD((x) => ({ ...x, [k]: v }));
@@ -321,6 +385,22 @@ function RuleEditor({ draft, groups, onClose, onSaved }: { draft: Draft; groups:
           ))}
         </div>
         <small>副檔名會自動補上</small>
+      </label>
+      <label className="field">
+        <span>歸入專案（選填）</span>
+        <select className="select" value={d.project_id ?? ''} onChange={(e) => set('project_id', e.target.value ? Number(e.target.value) : null)}>
+          <option value="">不指定</option>
+          {projects.data?.items.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field">
+        <span>加上標籤（選填）</span>
+        <input className="input" value={d.tags ?? ''} onChange={(e) => set('tags', e.target.value || null)} placeholder="例：GC 分析, 數據" />
+        <small>多個用逗號分隔</small>
       </label>
       <label className="field check" style={{ marginTop: 16 }}>
         <Switch checked={d.enabled} onChange={(v) => set('enabled', v)} label="啟用" />

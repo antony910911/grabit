@@ -1,7 +1,14 @@
 # 複製成 .dev.vars 供本機 `wrangler dev` 使用；正式環境請用 `wrangler secret put`
 LINE_CHANNEL_SECRET=
 LINE_CHANNEL_ACCESS_TOKEN=
+# 雲端空間（用哪個就設定哪個）
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+MS_CLIENT_ID=
+MS_CLIENT_SECRET=
+DROPBOX_APP_KEY=
+DROPBOX_APP_SECRET=
+# AI 文件判讀（選用）
+ANTHROPIC_API_KEY=
 # 本機開發時略過登入驗證（正式環境絕對不要設定）
 DEV_NO_AUTH=true

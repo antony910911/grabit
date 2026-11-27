@@ -1,7 +1,7 @@
 {
-  "name": "Grabit FileHub",
-  "short_name": "FileHub",
-  "description": "LINE 群組檔案自動歸檔與管理",
+  "name": "GrabIt",
+  "short_name": "GrabIt",
+  "description": "多群組檔案集中管理",
   "lang": "zh-Hant",
   "start_url": "/",
   "scope": "/",

@@ -1,59 +1,83 @@
-# Grabit FileHub
+# grabit.｜多群組檔案集中管理
 
-把 LINE 群組裡上傳的檔案自動下載到 Google Drive，依檔名規則分類到不同資料夾，並提供一個電腦、手機都能用的管理介面（PWA）。
+只要建立一個 GrabIt LINE Bot，加入多個 LINE 群組，就能把各群組上傳的檔案自動下載、分類、歸檔到你指定的雲端空間，並在同一個管理介面（電腦、手機都能用的 PWA）搜尋、整理、追蹤。
 
-- **全部跑在 Cloudflare**：Workers（後端＋管理介面）、Queues（背景處理與重試）、D1（資料庫）、Access（登入）。
-- **個人用量可以做到每月 0 元**（見下方「費用與限制」）。
+- **全部跑在 Cloudflare**：Workers（後端＋管理介面）、Queues（背景處理與重試）、D1（資料庫＋全文搜尋）、Access（登入）。
+- **互動展示版**：`npm run build:demo` 會產生 `web/dist-demo/grabit-demo.html`，在瀏覽器裡執行完整的後端邏輯（資料、雲端與 AI 為模擬），不用部署就能試用。
 
-## 功能（V1）
+## 功能
 
+### 收檔
 | 功能 | 說明 |
 |---|---|
-| 自動收檔 | Bot 加入群組後，群組裡的檔案、圖片、影片、音訊都會自動備份 |
-| 依規則分類 | 關鍵字、副檔名、正規表示式、來源群組；第一條符合的規則決定資料夾 |
-| 路徑變數 | `{group}` `{yyyy}` `{MM}` `{dd}` `{sender}` `{ext}`，例：`Farnesene/分析數據/{yyyy}` |
-| 自動改名 | 例：`{yyyyMMdd}_{name}`，副檔名自動補上；同名檔案自動加 `(1)` |
-| 待分類收件匣 | 沒有規則符合的檔案放到 `待分類/{group}`，可手動搬移 |
-| 規則模擬器 | 輸入檔名立即看到會分到哪裡；編輯規則時也能即時試 |
-| 重新套用規則 | 改了規則後，先預覽、再把舊檔案批次搬到新位置（手動調整過的不會動） |
-| 重複偵測 | 用 Google Drive 算出的 MD5 比對，內容相同的檔案不會存第二份 |
-| 檔案管理 | 搜尋、篩選、移動、改名、刪除（移到 Drive 垃圾桶）、多選批次操作 |
-| 群組管理 | 自訂群組顯示名稱、個別暫停備份 |
+| 多群組 | 一個 Bot 加入多個群組；新群組自動出現在「待設定」，設定前先用預設值備份，不漏檔 |
+| 檔案類型 | 檔案、照片、影片、錄音、相簿；圖片／影片自動命名 `IMG_日期_時間_訊息ID.jpg` |
+| Email 附件 | 透過 Cloudflare Email Routing，把寄到指定信箱的附件也自動歸檔（限定寄件者） |
+| 手動上傳 | 管理介面直接上傳，走同一套分類規則 |
+
+### 分類（三層）
+1. **群組來源**：每個群組可以指定雲端空間、預設資料夾、預設專案、改名規則。
+2. **檔名規則**：關鍵字、副檔名、正規表示式、來源群組；路徑變數 `{group}` `{yyyy}` `{MM}` `{dd}` `{sender}` `{ext}`；可同時指定專案與標籤；規則模擬器即時預覽。
+3. **AI 判讀內容**（選用，Claude）：讀 PDF、Word、Excel、簡報、圖片，產生摘要與標籤；規則判斷不了時建議資料夾，把握度高於門檻就自動歸檔，否則留在「待分類」並提供一鍵採用。
+
+### 管理
+| 功能 | 說明 |
+|---|---|
+| 檔案來源面板 | 依群組、專案、標籤、年度、檔案類型篩選；只看最新版本 |
+| 搜尋 | 全文搜尋（D1 FTS5 trigram，支援中文任意片段）＋選用的語意搜尋（Workers AI＋Vectorize） |
+| 問 AI | 用一句話查檔案與內容，回答附上檔案連結；只搜尋使用者有權限的群組 |
+| 資料夾管理 | 樹狀目錄、拖拉檔案到資料夾、資料夾改名／搬移（雲端、紀錄、規則同步更新） |
+| 版本管理 | 自動辨識 v1、v2、Final、修正版、(1)…，同一份文件的版本串在一起，可比對內文差異 |
+| 重複偵測 | 依雲端回傳的雜湊判斷內容相同的檔案，移到 `_重複檔案`，可選擇保留或刪除 |
+| 專案與標籤 | 來源與分類分開：不同群組的檔案可以歸到同一個研究專案；標籤可改名、合併 |
+| 規則學習 | 手動搬移檔案後，系統找出這個資料夾特有的關鍵字，建議建立規則 |
+| 重新套用規則 | 改規則後先預覽、再批次搬移舊檔案；手動調整過的不會動 |
+| 復原 | 搬移、批次搬移、重新套用、資料夾改名都可以一鍵復原 |
 | 失敗處理 | 自動重試（指數退避）、失敗清單、一鍵重試、處理紀錄 |
-| 跨裝置 | 響應式 PWA，iPhone／Android／Mac／Windows 都能「安裝」成 App |
+| 歸檔通知 | 群組可開啟：Bot 在 LINE 回覆「已歸檔到哪裡」（回覆訊息免費） |
+| 多雲端 | Google Drive、OneDrive／SharePoint、Dropbox、NAS（WebDAV）；每個群組可以存到不同空間 |
+| 多使用者權限 | 管理員／編輯者／檢視者；非管理員只看得到被授權的群組 |
+| 外部整合 | 歸檔、搬移、刪除時呼叫你設定的 Webhook（HMAC 簽章），可串接 Folio、ProjectDeck 等系統 |
 
 ## 架構
 
 ```
-LINE 群組 ──webhook──▶ Worker /webhook ──驗簽、寫入 D1──▶ Cloudflare Queue
-                                                            │
-                         ┌──────────────────────────────────┘
-                         ▼
-                   Queue consumer：LINE 下載 ─串流─▶ Google Drive 上傳 → 分類 → 去重 → 記錄
-                                                            │
-             管理介面（PWA，/）◀── /api/*（Cloudflare Access 保護）◀──┘
+LINE 群組 A/B/C ──webhook──▶ /webhook（驗簽、去重、群組設定）──▶ Queue
+Email 附件 ──Email Routing──▶ email()  ─┐                         │
+管理介面上傳 ──▶ /api/upload ───────────┼──────────────▶ 歸檔流程 ◀─┘
+                                        │   群組設定 → 檔名規則 → AI 判讀
+                                        │   → 上傳雲端 → 去重 → 版本 → 標籤／專案 → 索引 → 通知／Webhook
+管理介面（PWA）──▶ /api/*（Cloudflare Access ＋ 角色權限）
 ```
 
 ```
 src/worker/
-  index.ts      路由入口（webhook、API、OAuth、靜態檔）
-  webhook.ts    LINE webhook：驗簽後立刻回 200，工作丟到佇列
-  processor.ts  佇列處理：下載、分類、上傳、去重、重試
-  rules.ts      分類規則引擎（純函式）
-  drive.ts      Google Drive OAuth 與 REST API（串流上傳）
-  line.ts       LINE Messaging API
-  api.ts        管理介面 API
-  auth.ts       Cloudflare Access JWT 驗證
-web/            管理介面（React + Vite，PWA）
-migrations/     D1 資料表
-test/           單元測試與端對端測試
+  index.ts        路由入口（webhook、API、OAuth、email、queue）
+  webhook.ts      LINE webhook
+  ingest.ts       Email 附件、手動上傳
+  processor.ts    歸檔流程與重試
+  rules.ts        檔名規則引擎（純函式）
+  ai.ts           Claude 文件判讀與自然語言查詢
+  extract.ts      Office／文字檔內容擷取
+  versions.ts     版本辨識
+  learn.ts        從手動搬移學習規則
+  search.ts       全文＋語意搜尋
+  ops.ts          搬移、資料夾改名、復原
+  permissions.ts  成員與群組權限
+  notify.ts       LINE 回覆通知、外部 Webhook
+  storage/        Google Drive、OneDrive、Dropbox、WebDAV、展示用記憶體空間
+  api/            管理介面 API
+web/src/          管理介面（React + Vite，PWA）
+web/demo/         展示版（sql.js 取代 D1，模擬雲端與 AI）
+migrations/       D1 資料表
+test/             單元測試與端對端測試
 ```
 
-## 部署步驟
+## 部署
 
-需要：Node.js 20+、Cloudflare 帳號、LINE 官方帳號、Google 帳號。
+需要：Node.js 20+、Cloudflare 帳號、LINE 官方帳號，以及至少一種雲端空間。
 
-### 1. 安裝與建立 Cloudflare 資源
+### 1. Cloudflare 資源
 
 ```bash
 npm install
@@ -67,7 +91,7 @@ npx wrangler login
 npx wrangler d1 create grabit
 ```
 
-把輸出的 `database_id` 貼到 `wrangler.toml` 的 `[[d1_databases]]`。
+把輸出的 `database_id` 貼到 `wrangler.toml`。
 
 ```bash
 npx wrangler queues create grabit-files
@@ -77,11 +101,11 @@ npx wrangler queues create grabit-files
 npm run db:migrate:remote
 ```
 
-### 2. LINE 設定
+### 2. LINE
 
-1. 到 [LINE Developers](https://developers.line.biz/) 建立 Provider → **Messaging API channel**（會同時建立 LINE 官方帳號）。
-2. 在 **Basic settings** 複製 **Channel secret**；在 **Messaging API** 頁面產生 **Channel access token（long-lived）**。
-3. 到 [LINE Official Account Manager](https://manager.line.biz/) → 設定 → 帳號設定：開啟 **允許加入群組與多人聊天室**；回應設定裡關閉「自動回應訊息」與「加入好友的歡迎訊息」（避免 Bot 在群組裡說話）。
+1. [LINE Developers](https://developers.line.biz/) 建立 Provider → **Messaging API channel**。
+2. 複製 **Channel secret**，在 Messaging API 頁面產生 **Channel access token（long-lived）**。
+3. [LINE Official Account Manager](https://manager.line.biz/) → 帳號設定：開啟**允許加入群組與多人聊天室**；關閉自動回應與歡迎訊息。
 
 ```bash
 npx wrangler secret put LINE_CHANNEL_SECRET
@@ -91,58 +115,60 @@ npx wrangler secret put LINE_CHANNEL_SECRET
 npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 ```
 
-### 3. Google Drive 設定
+### 3. 雲端空間（用哪個設定哪個）
 
-1. 到 [Google Cloud Console](https://console.cloud.google.com/) 建立專案，啟用 **Google Drive API**。
-2. **OAuth 同意畫面**：類型選「外部」，加入你自己的 Google 帳號為測試使用者。範圍只需要 `drive.file`（系統只能存取它自己建立的檔案，看不到你雲端硬碟其他內容）。
-   - 建議把發布狀態改成「正式版」：`drive.file` 不需要 Google 審查，而「測試中」狀態的授權每 7 天會失效。
-3. **憑證** → 建立 OAuth 用戶端 ID → 類型「網頁應用程式」，已授權的重新導向 URI 填：
-   `https://<你的網域>/oauth/google/callback`（部署後在管理介面「設定」頁可以直接複製）。
+部署後在管理介面「雲端設定」新增空間並授權。各家需要先建立 OAuth 應用程式，重新導向網址是 `https://<你的網域>/oauth/<類型>/callback`（「系統設定」頁可以直接複製）。
+
+| 空間 | 建立應用程式 | 權限 | Secrets |
+|---|---|---|---|
+| Google Drive | [Google Cloud Console](https://console.cloud.google.com/)：啟用 Drive API，建立「網頁應用程式」OAuth 用戶端；同意畫面發布為「正式版」（`drive.file` 不需審查，測試中狀態的授權 7 天會失效） | `drive.file`（只能存取本系統建立的檔案） | `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` |
+| OneDrive／SharePoint | [Microsoft Entra 應用程式註冊](https://entra.microsoft.com/)：平台選 Web，支援的帳戶類型依需求選擇 | `Files.ReadWrite`、`offline_access`、`User.Read` | `MS_CLIENT_ID`、`MS_CLIENT_SECRET` |
+| Dropbox | [Dropbox App Console](https://www.dropbox.com/developers/apps)：Scoped access，權限勾選 `files.content.write`、`files.content.read`、`account_info.read` | 同左 | `DROPBOX_APP_KEY`、`DROPBOX_APP_SECRET` |
+| NAS（WebDAV） | Synology：套件中心安裝 WebDAV Server 並開啟 HTTPS；QNAP、Nextcloud 也支援 | 建議建立只能寫入指定資料夾的專用帳號 | 在介面輸入網址、帳號、密碼 |
+
+iCloud Drive 沒有伺服器可用的上傳 API，因此不支援直接串接。
 
 ```bash
 npx wrangler secret put GOOGLE_CLIENT_ID
 ```
 
-```bash
-npx wrangler secret put GOOGLE_CLIENT_SECRET
-```
+（其他 secrets 依同樣方式設定。）
 
-### 4. 部署
+### 4. AI（選用）
 
 ```bash
-npm run deploy
+npx wrangler secret put ANTHROPIC_API_KEY
 ```
 
-部署完成會得到 `https://grabit.<帳號>.workers.dev`（也可以在 Cloudflare 綁自己的網域）。
+預設模型是 `claude-opus-5-5`（`wrangler.toml` 的 `AI_MODEL` 可以改）。AI 判讀會讀取 10MB 以內的檔案內容，每個檔案呼叫一次 API；可以在「系統設定」整體關閉，或在「群組設定」對個別群組關閉。呼叫時已開啟伺服器端的 refusal fallback（`fallbacks: "default"`）。
 
-### 5. 用 Cloudflare Access 保護管理介面（必要）
+語意搜尋另外需要 Workers AI 與 Vectorize，見 `wrangler.toml` 最下方的說明。
 
-沒有設定登入保護時，所有 `/api` 會回傳 503，避免資料外洩。
-
-1. Cloudflare 後台 → **Zero Trust** → Access → Applications → **Add an application** → Self-hosted。
-2. Domain 填你的 Worker 網址；Policy 選 **Allow**，Include → Emails 填你（和同事）的 email。登入方式預設是 email 一次性驗證碼，也可以加 Google 登入。
-3. **再建立一個 Application** 給 webhook：Domain 一樣，Path 填 `webhook`，Policy 動作選 **Bypass**、Include → Everyone。（LINE 伺服器必須能直接呼叫 webhook，安全性由 LINE 簽章驗證負責。）
-4. 打開第一個 Application 的設定，複製 **Application Audience (AUD) Tag**；你的 team domain 在 Zero Trust → Settings 可以看到（像 `xxx.cloudflareaccess.com`）。
-5. 填到 `wrangler.toml`：
-
-```toml
-ACCESS_TEAM_DOMAIN = "xxx.cloudflareaccess.com"
-ACCESS_AUD = "貼上 AUD tag"
-```
+### 5. 部署與登入保護
 
 ```bash
 npm run deploy
 ```
 
-### 6. 連接並開始使用
+用 **Cloudflare Access** 保護管理介面（沒有設定時 `/api` 一律回 503）：
 
-1. 打開管理介面 → **設定** → **連接 Google Drive**，用你的 Google 帳號授權。
-2. 複製設定頁上的 **Webhook URL**，貼到 LINE Developers → Messaging API → Webhook URL，按 Verify，並開啟 **Use webhook**。
-3. 在 LINE 把官方帳號邀請進群組，傳一個檔案測試，幾秒內就會出現在「檔案」頁，並存到 Google Drive 的「LINE FileHub」資料夾。
-4. 到 **分類規則** 建立規則，可以先用右邊的模擬器測試。
-5. 手機上用 Safari／Chrome 開啟網址 →「加入主畫面」，就能像 App 一樣使用。
+1. Zero Trust → Access → Applications → 新增 Self-hosted，Domain 填 Worker 網址，Policy 允許你與成員的 email。
+2. 再新增一個 Application：同網域、Path 填 `webhook`、動作 **Bypass**（LINE 要能直接呼叫，安全性由簽章驗證負責）。
+3. 把 team domain 與 Application Audience (AUD) Tag 填進 `wrangler.toml` 的 `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`，重新部署。
+4. 第一位登入的人（或 `ADMIN_EMAILS` 名單上的人）自動成為管理員；其他成員到「成員與權限」加入。
 
-## 本機開發
+### 6. 開始使用
+
+1. 「雲端設定」新增並授權空間。
+2. 「系統設定」複製 Webhook URL，貼到 LINE Developers → Webhook URL，開啟 Use webhook。
+3. 把 Bot 邀請進群組 →「群組設定」完成每個群組的設定。
+4. 建立分類規則、專案；手機上「加入主畫面」安裝成 App。
+
+### Email 收件（選用）
+
+Cloudflare 後台 → 你的網域 → Email Routing → 建立一個地址（例如 `files@你的網域`），動作選「Send to a Worker」並選 `grabit`。再到「系統設定」填允許的寄件者。
+
+## 開發與測試
 
 ```bash
 cp .dev.vars.example .dev.vars
@@ -156,10 +182,6 @@ npm run db:migrate:local
 npm run dev
 ```
 
-`.dev.vars` 裡的 `DEV_NO_AUTH=true` 會略過登入，**正式環境絕對不要設定**。只改前端時可以另外跑 `npm run dev:web`（有熱更新，API 會轉到 `wrangler dev`）。
-
-## 測試
-
 ```bash
 npm test
 ```
@@ -168,26 +190,21 @@ npm test
 npm run test:e2e
 ```
 
-- `npm test`：規則引擎、路徑變數、LINE 簽章等單元測試。
-- `npm run test:e2e`：在本機啟動 `wrangler dev`（真的 D1 與 Queue），把 LINE 與 Google Drive 換成假服務，從 webhook 一路驗證到歸檔、去重、重新套用規則、手動搬移與刪除。
+```bash
+npm run build:demo
+```
+
+- `npm test`：規則引擎、版本辨識、規則學習、文字擷取、群組檔案類型、Dropbox 標頭等單元測試。
+- `npm run test:e2e`：本機啟動 `wrangler dev`（真的 D1、Queue），LINE 與 Google Drive 換成假服務，從 webhook 驗證到歸檔、群組設定、規則學習、復原、重新套用、重複檔、資料夾改名、版本、搜尋、上傳與權限。
+- OneDrive、Dropbox、WebDAV 與 Claude API 依官方文件實作，但沒有在測試中連線到真實服務，第一次使用時請先用少量檔案確認。
 
 ## 費用與限制
 
 | 項目 | 說明 |
 |---|---|
-| LINE | 只接收訊息、不主動推播，不會用到付費訊息額度 |
-| Cloudflare Workers／Queues／D1 | 個人用量通常在免費額度內。**大檔案注意**：免費方案每次執行的 CPU 時間很短；檔案是串流傳輸，主要花在等待網路，一般文件沒問題。如果常傳大影片而出現 CPU 超時，可升級 Workers Paid（每月 5 美元） |
-| Cloudflare Access | 50 人以內免費 |
-| Google Drive | 使用你自己帳號的空間 |
+| LINE | 只接收訊息與回覆通知，不用付費訊息額度 |
+| Cloudflare | 個人用量多在免費額度內。AI 判讀與大型檔案需要較多 CPU 時間，建議使用 Workers Paid（每月 5 美元） |
+| Claude API | 依用量計費；可以整體或依群組關閉 |
+| 雲端空間 | 使用你自己的帳號空間；Dropbox 單檔上限 150MB |
 
-已知限制：
-
-- **Bot 只收得到加入群組之後的檔案**，LINE 官方 API 拿不到歷史檔案。
-- LINE 只保存使用者上傳的內容一段時間，系統收到就會立即處理；如果 Google Drive 授權失效太久，期間的檔案可能會過期而無法補抓。
-- **一個群組只能加入一個 LINE 官方帳號**。
-- 圖片、影片、音訊在 LINE 上沒有原始檔名，系統會命名為 `IMG_日期_時間_訊息ID.jpg`，所以這類檔案只能用群組或副檔名規則分類。
-- 改變根目錄名稱或群組顯示名稱，只影響之後的新檔案。
-
-## 之後可以做（V2 / V3）
-
-版本管理（v1、v2、Final 關聯）、多標籤、從手動拖曳學習規則、多雲端（OneDrive、Dropbox）、LINE LIFF 入口、AI 讀取內容分類與全文搜尋。
+已知限制：Bot 只收得到加入群組之後的檔案；一個群組只能有一個官方帳號；LINE 上的檔案只保存一段時間，授權失效太久可能來不及補抓；跨雲端空間搬移檔案目前不支援（同一空間內可以自由搬移）。

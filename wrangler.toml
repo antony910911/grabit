@@ -9,6 +9,10 @@ TIMEZONE = "Asia/Taipei"
 # Cloudflare Access 設定（部署後依 README 填入）
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
+# 這些 email 第一次登入時自動成為管理員（逗號分隔）；沒設定時第一位登入者成為管理員
+ADMIN_EMAILS = ""
+# AI 模型（需要 ANTHROPIC_API_KEY）
+AI_MODEL = "claude-opus-5-5"
 
 [assets]
 directory = "./web/dist"
@@ -37,3 +41,11 @@ max_concurrency = 1
 
 [observability]
 enabled = true
+
+# ---------- 選用：語意搜尋（Workers AI + Vectorize） ----------
+# npx wrangler vectorize create grabit-files --dimensions=1024 --metric=cosine
+# [ai]
+# binding = "AI"
+# [[vectorize]]
+# binding = "VECTORIZE"
+# index_name = "grabit-files"

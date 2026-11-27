@@ -16,6 +16,22 @@ const paths: Record<string, ReactNode> = {
   down: <path d="m6 9 6 6 6-6" />,
   external: <path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />,
   refresh: <path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6" />,
+  ai: <path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9zM19 15l.9 2.1 2.1.9-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z" />,
+  folder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 10h18" />,
+  tag: <path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8zM7.5 7.5h.01" />,
+  cloud: <path d="M17.5 19a4.5 4.5 0 1 0-1.3-8.8A6 6 0 1 0 6 16.9M6 19h11.5" />,
+  users: <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8" />,
+  history: <path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l4 2" />,
+  upload: <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />,
+  more: <path d="M4 6h16M4 12h16M4 18h16" />,
+  check: <path d="M20 6 9 17l-5-5" />,
+  filter: <path d="M22 3H2l8 9.5V19l4 2v-8.5z" />,
+  undo: <path d="M9 14 4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3" />,
+  layers: <path d="m12 2 10 5-10 5L2 7zM2 17l10 5 10-5M2 12l10 5 10-5" />,
+  download: <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />,
+  send: <path d="M22 2 11 13M22 2l-7 20-4-9-9-4z" />,
+  line: <path d="M12 3C6.5 3 2 6.6 2 11c0 3.9 3.5 7.2 8.3 7.9.3.1.8.2.9.5.1.3.1.7 0 1l-.1.9c0 .3-.2 1 .9.5s5.9-3.5 8-6c1.4-1.6 2-3.2 2-4.8C22 6.6 17.5 3 12 3z" />,
+  mail: <path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM22 6l-10 7L2 6" />,
 };
 
 export function Icon({ name }: { name: keyof typeof paths | string }) {
@@ -68,10 +84,13 @@ export function FileIcon({ ext, type }: { ext: string; type?: string }) {
   return <div className={`file-icon ${k.cls}`}>{k.label}</div>;
 }
 
-export function StatusBadge({ file }: { file: Pick<FileItem, 'status' | 'unsorted'> }) {
+export function StatusBadge({ file }: { file: Pick<FileItem, 'status' | 'unsorted'> & { classified_by?: string | null } }) {
   switch (file.status) {
     case 'done':
-      return file.unsorted ? <span className="badge warn">待分類</span> : <span className="badge ok">已歸檔</span>;
+      if (file.unsorted) return <span className="badge warn">待分類</span>;
+      return file.classified_by === 'ai' ? <span className="badge info">AI 歸檔</span> : <span className="badge ok">已歸檔</span>;
+    case 'skipped':
+      return <span className="badge muted">略過</span>;
     case 'pending':
     case 'processing':
       return <span className="badge info">處理中</span>;
@@ -116,5 +135,49 @@ export function FolderInput({ value, onChange, folders, autoFocus }: { value: st
         ))}
       </datalist>
     </>
+  );
+}
+
+export function TagChip({ tag, onRemove }: { tag: { name: string; color?: string; source?: string }; onRemove?: () => void }) {
+  return (
+    <span className="tag" title={tag.source === 'ai' ? 'AI 標籤' : tag.source === 'rule' ? '規則標籤' : undefined}>
+      {tag.source === 'ai' && <span className="tag-ai">AI</span>}
+      {tag.name}
+      {onRemove && (
+        <button type="button" onClick={onRemove} aria-label={`移除 ${tag.name}`}>
+          ×
+        </button>
+      )}
+    </span>
+  );
+}
+
+export function ProjectBadge({ name, color }: { name: string; color?: string | null }) {
+  return (
+    <span className="project">
+      <i style={{ background: color ?? 'var(--accent)' }} />
+      {name}
+    </span>
+  );
+}
+
+export function SourceIcon({ type }: { type: string }) {
+  return <span className="source-icon">{type === 'email' ? <Icon name="mail" /> : type === 'upload' ? <Icon name="upload" /> : <Icon name="line" />}</span>;
+}
+
+export function Brand() {
+  return (
+    <span className="brand-text">
+      grabit<b>.</b>
+    </span>
+  );
+}
+
+export function Empty({ title, children }: { title: string; children?: ReactNode }) {
+  return (
+    <div className="empty">
+      <h3>{title}</h3>
+      {children}
+    </div>
   );
 }
