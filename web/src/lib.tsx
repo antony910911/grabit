@@ -126,7 +126,7 @@ export function ConfirmHost() {
   return (
     <div className="overlay" style={{ zIndex: 70 }} onClick={() => done(false)}>
       <div className="sheet" role="alertdialog" aria-modal="true" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
-        <p style={{ margin: '8px 0 4px', fontSize: 15, lineHeight: 1.6 }}>{req.message}</p>
+        <p style={{ margin: '8px 0 4px', fontSize: 'calc(15px * var(--fs))', lineHeight: 1.6 }}>{req.message}</p>
         <div className="sheet-actions">
           <button className="btn" onClick={() => done(false)} autoFocus>
             取消

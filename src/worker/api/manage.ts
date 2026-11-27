@@ -21,24 +21,33 @@ export const manage = new Hono<AppEnv>();
 
 const PALETTES = ['indigo', 'ocean', 'forest', 'terracotta', 'plum', 'graphite'];
 const MODES = ['system', 'light', 'dark'];
+const FONT_SIZES = ['sm', 'md', 'lg', 'xl'];
 
-async function readPrefs(c: Ctx, email: string): Promise<{ mode: string; palette: string }> {
+async function readPrefs(c: Ctx, email: string): Promise<{ mode: string; palette: string; fontSize: string }> {
   const row = await c.env.DB.prepare('SELECT prefs FROM users WHERE email = ?').bind(email).first<{ prefs: string | null }>();
-  let p: { mode?: string; palette?: string } = {};
+  let p: { mode?: string; palette?: string; fontSize?: string } = {};
   try {
     p = JSON.parse(row?.prefs || '{}');
   } catch {
     // 忽略損壞的設定
   }
-  return { mode: MODES.includes(p.mode ?? '') ? p.mode! : 'system', palette: PALETTES.includes(p.palette ?? '') ? p.palette! : 'indigo' };
+  return {
+    mode: MODES.includes(p.mode ?? '') ? p.mode! : 'system',
+    palette: PALETTES.includes(p.palette ?? '') ? p.palette! : 'indigo',
+    fontSize: FONT_SIZES.includes(p.fontSize ?? '') ? p.fontSize! : 'md',
+  };
 }
 
 /** 個人外觀設定（每個人都可以改自己的） */
 manage.put('/me/prefs', async (c) => {
   const u = c.get('user');
-  const b = await readJson<{ mode?: string; palette?: string }>(c);
+  const b = await readJson<{ mode?: string; palette?: string; fontSize?: string }>(c);
   const cur = await readPrefs(c, u.email);
-  const next = { mode: b.mode && MODES.includes(b.mode) ? b.mode : cur.mode, palette: b.palette && PALETTES.includes(b.palette) ? b.palette : cur.palette };
+  const next = {
+    mode: b.mode && MODES.includes(b.mode) ? b.mode : cur.mode,
+    palette: b.palette && PALETTES.includes(b.palette) ? b.palette : cur.palette,
+    fontSize: b.fontSize && FONT_SIZES.includes(b.fontSize) ? b.fontSize : cur.fontSize,
+  };
   await c.env.DB.prepare('UPDATE users SET prefs = ? WHERE email = ?').bind(JSON.stringify(next), u.email).run();
   return c.json(next);
 });
