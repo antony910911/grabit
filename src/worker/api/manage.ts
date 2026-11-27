@@ -3,7 +3,8 @@ import { Hono } from 'hono';
 import { getGroup, getSetting, listRules, log, setSetting, deleteSetting } from '../db';
 import { canSeeGroup, fileScope, type Role } from '../permissions';
 import { classify, renderPath, splitList, templateVars, type MatchType, type Rule } from '../rules';
-import { aiEngine } from '../ai';
+import { askEngine, WORKERS_MODELS, DEFAULT_GEMINI_MODEL } from '../ai';
+import { aiStatus, loadAiSettings, queueAi, resumeAi, DEFAULT_FEATURES, type AiFeatures } from '../ai-job';
 import { hasFts, searchForAi } from '../search';
 import { STORAGE_LABEL, storageReady, type StorageRow, type StorageType } from '../storage';
 import { oauthConfigured } from '../storage/oauth';
@@ -50,7 +51,7 @@ manage.get('/me', async (c) => {
     name: u.name,
     role: u.role,
     allGroups: u.allGroups,
-    aiAvailable: !!(await aiEngine(c.env)),
+    aiAvailable: !!(await askEngine(c.env)),
     fullText: await hasFts(c.env),
     semantic: !!(c.env.AI && c.env.VECTORIZE),
     demo: !!c.env.DEMO_AI,
@@ -98,6 +99,8 @@ manage.get('/stats', async (c) => {
       SUM(CASE WHEN f.status = 'failed' THEN 1 ELSE 0 END) AS failed,
       SUM(CASE WHEN f.status IN ('pending', 'processing') THEN 1 ELSE 0 END) AS pending,
       SUM(CASE WHEN f.status = 'duplicate' THEN 1 ELSE 0 END) AS duplicates,
+      SUM(CASE WHEN f.status = 'done' AND f.unsorted = 1 AND f.ai_status = 'done' AND json_extract(f.ai_suggestion, '$.folder') IS NOT NULL
+        AND COALESCE(json_extract(f.ai_suggestion, '$.dismissed'), 0) = 0 AND COALESCE(json_extract(f.ai_suggestion, '$.applied.folder'), 0) = 0 THEN 1 ELSE 0 END) AS ai_review,
       SUM(CASE WHEN f.status = 'done' THEN COALESCE(f.size, 0) ELSE 0 END) AS bytes,
       COUNT(DISTINCT CASE WHEN f.status = 'done' AND f.version_key IS NOT NULL THEN f.version_key END) AS families
      FROM files f WHERE ${scope.sql}`,
@@ -119,6 +122,7 @@ manage.get('/stats', async (c) => {
     archived,
     unsorted: s?.unsorted ?? 0,
     byAi: s?.by_ai ?? 0,
+    aiReview: s?.ai_review ?? 0,
     failed: s?.failed ?? 0,
     pending: s?.pending ?? 0,
     duplicates: s?.duplicates ?? 0,
@@ -430,6 +434,7 @@ interface GroupPatch {
   backup_videos?: boolean;
   notify?: boolean;
   ai_enabled?: boolean;
+  ai_external?: boolean;
   project_id?: number | null;
   configured?: boolean;
   members?: string[];
@@ -445,7 +450,7 @@ manage.patch('/groups/:id', async (c) => {
   const bool = (x: unknown) => (x ? 1 : 0);
   await c.env.DB.prepare(
     `UPDATE groups SET alias = ?, enabled = ?, storage_id = ?, base_folder = ?, rename_template = ?, file_types = ?, backup_images = ?, backup_videos = ?,
-     notify = ?, ai_enabled = ?, project_id = ?, configured = ?, updated_at = datetime('now') WHERE id = ?`,
+     notify = ?, ai_enabled = ?, ai_external = ?, project_id = ?, configured = ?, updated_at = datetime('now') WHERE id = ?`,
   )
     .bind(
       (v('alias', g.alias) as string | null)?.toString().trim() || null,
@@ -458,6 +463,7 @@ manage.patch('/groups/:id', async (c) => {
       bool(v('backup_videos', g.backup_videos)),
       bool(v('notify', g.notify)),
       bool(v('ai_enabled', g.ai_enabled)),
+      bool(v('ai_external', g.ai_external)),
       v('project_id', g.project_id) ?? null,
       bool(v('configured', g.configured)),
       id,
@@ -725,10 +731,7 @@ manage.get('/settings', async (c) => {
     lineConfigured: !!(c.env.LINE_CHANNEL_SECRET && c.env.LINE_CHANNEL_ACCESS_TOKEN),
     queueEnabled: !!c.env.FILE_QUEUE,
     timezone: c.env.TIMEZONE || 'Asia/Taipei',
-    aiKeyConfigured: !!c.env.ANTHROPIC_API_KEY || !!c.env.DEMO_AI,
-    aiModel: c.env.DEMO_AI ? '展示用模擬 AI' : c.env.AI_MODEL || 'claude-opus-5-5',
-    aiEnabled: (await getSetting(c.env, 'ai_enabled')) !== '0',
-    aiThreshold: Number((await getSetting(c.env, 'ai_threshold')) ?? 0.7),
+    ai: await aiSettingsView(c),
     fullText: await hasFts(c.env),
     semantic: !!(c.env.AI && c.env.VECTORIZE),
     outgoingWebhook: (await getSetting(c.env, 'webhook_url')) ?? '',
@@ -741,11 +744,66 @@ manage.get('/settings', async (c) => {
   });
 });
 
+/** AI 文件判讀的設定與狀態（只有管理員看得到） */
+async function aiSettingsView(c: Ctx) {
+  const s = await loadAiSettings(c.env);
+  return {
+    ...s,
+    available: {
+      workers: !!c.env.AI || !!c.env.DEMO_AI,
+      gemini: !!c.env.GEMINI_API_KEY,
+      claude: !!c.env.ANTHROPIC_API_KEY,
+    },
+    workersModels: WORKERS_MODELS.map((m) => ({ id: m.id, label: m.label })),
+    defaultGeminiModel: DEFAULT_GEMINI_MODEL,
+    claudeModel: c.env.AI_MODEL || 'claude-opus-5-5',
+    demo: !!c.env.DEMO_AI,
+    status: await aiStatus(c.env, s),
+  };
+}
+
+interface AiSettingsPatch {
+  provider?: string;
+  workersModel?: string;
+  geminiModel?: string;
+  dailyLimit?: number;
+  neuronBudget?: number;
+  threshold?: number;
+  onlyUnmatched?: boolean;
+  externalNeedsConsent?: boolean;
+  features?: Partial<AiFeatures>;
+}
+
+async function saveAiSettings(c: Ctx, b: AiSettingsPatch): Promise<void> {
+  const env = c.env;
+  if (b.provider !== undefined) {
+    if (!['workers', 'gemini', 'claude', 'off'].includes(b.provider)) throw bad('不支援的 AI 引擎');
+    await setSetting(env, 'ai_provider', b.provider);
+  }
+  const model = (v: string, re: RegExp, label: string) => {
+    const m = v.trim();
+    if (!re.test(m)) throw bad(`${label}的模型名稱格式不正確`);
+    return m;
+  };
+  if (b.workersModel !== undefined) await setSetting(env, 'ai_model_workers', model(b.workersModel, /^@(cf|hf)\/[\w.\-/]+$/, 'Workers AI '));
+  if (b.geminiModel !== undefined) await setSetting(env, 'ai_model_gemini', model(b.geminiModel.replace(/^models\//, ''), /^[\w.\-]+$/, 'Gemini '));
+  if (b.dailyLimit !== undefined) await setSetting(env, 'ai_daily_limit', String(Math.max(0, Math.min(5000, Math.round(Number(b.dailyLimit) || 0)))));
+  if (b.neuronBudget !== undefined) await setSetting(env, 'ai_budget', String(Math.max(0, Math.min(10000, Math.round(Number(b.neuronBudget) || 0)))));
+  if (b.threshold !== undefined) await setSetting(env, 'ai_threshold', String(Math.max(0.5, Math.min(1, Number(b.threshold) || 0.85))));
+  if (b.onlyUnmatched !== undefined) await setSetting(env, 'ai_only_unmatched', b.onlyUnmatched ? '1' : '0');
+  if (b.externalNeedsConsent !== undefined) await setSetting(env, 'ai_external_policy', b.externalNeedsConsent ? '1' : '0');
+  if (b.features) {
+    const cur = (await loadAiSettings(env)).features;
+    const next: AiFeatures = { ...DEFAULT_FEATURES, ...cur };
+    for (const k of Object.keys(DEFAULT_FEATURES) as (keyof AiFeatures)[]) if (b.features[k] !== undefined) next[k] = !!b.features[k];
+    await setSetting(env, 'ai_features', JSON.stringify(next));
+  }
+}
+
 manage.put('/settings', async (c) => {
   const me = need(c, 'admin');
-  const b = await readJson<{ aiEnabled?: boolean; aiThreshold?: number; outgoingWebhook?: string; outgoingWebhookSecret?: string; emailAllowedSenders?: string }>(c);
-  if (b.aiEnabled !== undefined) await setSetting(c.env, 'ai_enabled', b.aiEnabled ? '1' : '0');
-  if (b.aiThreshold !== undefined) await setSetting(c.env, 'ai_threshold', String(Math.max(0.3, Math.min(0.99, Number(b.aiThreshold) || 0.7))));
+  const b = await readJson<{ ai?: AiSettingsPatch; outgoingWebhook?: string; outgoingWebhookSecret?: string; emailAllowedSenders?: string }>(c);
+  if (b.ai) await saveAiSettings(c, b.ai);
   if (b.outgoingWebhook !== undefined) {
     if (b.outgoingWebhook && !/^https:\/\//.test(b.outgoingWebhook)) throw bad('Webhook 網址必須是 https:// 開頭');
     if (b.outgoingWebhook) await setSetting(c.env, 'webhook_url', b.outgoingWebhook);
@@ -755,6 +813,54 @@ manage.put('/settings', async (c) => {
   if (b.emailAllowedSenders !== undefined) await setSetting(c.env, 'email_allowed_senders', b.emailAllowedSenders.trim());
   await log(c.env, 'info', 'settings', `${me.email} 更新系統設定`);
   return c.json({ ok: true });
+});
+
+// ---------- AI 文件判讀 ----------
+
+manage.get('/ai/status', async (c) => {
+  need(c, 'admin');
+  return c.json(await aiStatus(c.env, await loadAiSettings(c.env)));
+});
+
+/** 額度重置前手動繼續（例如調高了每日上限） */
+manage.post('/ai/resume', async (c) => {
+  const me = need(c, 'admin');
+  await resumeAi(c.env);
+  await log(c.env, 'info', 'ai', `${me.email} 讓 AI 判讀繼續執行`);
+  return c.json({ ok: true });
+});
+
+/** 分析還沒判讀過的舊檔案（照樣受每日上限與群組政策限制） */
+manage.post('/ai/backfill', async (c) => {
+  const me = need(c, 'admin');
+  const { limit } = await readJson<{ limit?: number }>(c);
+  const n = Math.max(1, Math.min(200, Math.round(Number(limit) || 20)));
+  const rows = (
+    await c.env.DB.prepare("SELECT id FROM files WHERE status = 'done' AND (ai_status IS NULL OR ai_status = 'failed') AND ai_summary IS NULL ORDER BY received_at DESC LIMIT ?").bind(n).all<{ id: number }>()
+  ).results;
+  let queued = 0;
+  const skipped: Record<string, number> = {};
+  for (const r of rows) {
+    const q = await queueAi(c.env, c.executionCtx, r.id);
+    if (q.queued) queued++;
+    else if (q.reason) skipped[q.reason] = (skipped[q.reason] ?? 0) + 1;
+  }
+  await log(c.env, 'info', 'ai', `${me.email} 排入 ${queued} 份舊檔案做 AI 判讀`);
+  return c.json({ queued, skipped, scanned: rows.length });
+});
+
+/** 列出這把 Gemini 金鑰可以用的模型（不會送出任何檔案） */
+manage.get('/ai/gemini-models', async (c) => {
+  need(c, 'admin');
+  if (!c.env.GEMINI_API_KEY) throw bad('還沒有設定 GEMINI_API_KEY');
+  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=100', { headers: { 'x-goog-api-key': c.env.GEMINI_API_KEY } });
+  const data = (await res.json().catch(() => ({}))) as { models?: { name: string; displayName?: string; supportedGenerationMethods?: string[] }[]; error?: { message?: string } };
+  if (!res.ok) throw bad(`無法取得 Gemini 模型清單：${data.error?.message ?? res.status}`);
+  return c.json({
+    items: (data.models ?? [])
+      .filter((m) => m.supportedGenerationMethods?.includes('generateContent') && /gemini/i.test(m.name))
+      .map((m) => ({ id: m.name.replace(/^models\//, ''), label: m.displayName ?? m.name })),
+  });
 });
 
 manage.get('/logs', async (c) => {
@@ -773,8 +879,8 @@ manage.post('/ask', async (c) => {
   const user = c.get('user');
   const { question } = await readJson<{ question: string }>(c);
   if (!question?.trim()) throw bad('請輸入問題');
-  const engine = await aiEngine(c.env);
-  if (!engine) throw bad('AI 功能尚未啟用：請設定 ANTHROPIC_API_KEY，並在「系統設定」開啟 AI');
+  const engine = await askEngine(c.env);
+  if (!engine?.ask) throw bad('「問 AI」需要 Claude：請設定 ANTHROPIC_API_KEY。免費的 AI 文件判讀不包含跨文件問答');
   const scope = fileScope(user);
   const seen = new Set<number>();
   const answer = await engine.ask(question.trim().slice(0, 1000), {

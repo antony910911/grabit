@@ -40,7 +40,15 @@ export interface FileRow {
   content_text: string | null;
   reply_token: string | null;
   target_folder: string | null;
+  root_ref?: string | null;
+  ai_status: AiStatus | null;
+  ai_error: string | null;
+  ai_at: string | null;
+  ai_attempts: number;
 }
+
+/** AI 判讀工作的狀態（和收檔狀態分開） */
+export type AiStatus = 'queued' | 'running' | 'done' | 'failed' | 'skipped' | 'deferred';
 
 export interface GroupRow {
   id: string;
@@ -59,6 +67,7 @@ export interface GroupRow {
   backup_videos: number;
   notify: number;
   ai_enabled: number;
+  ai_external: number;
   project_id: number | null;
   configured: number;
 }

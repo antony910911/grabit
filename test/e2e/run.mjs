@@ -18,6 +18,8 @@ const cfg = 'test/e2e/.wrangler.e2e.toml';
     .replace('directory = "./web/dist"', 'directory = "../../web/dist"')
     .replace('migrations_dir = "migrations"', 'migrations_dir = "../../migrations"')
     .replace('max_batch_timeout = 5', 'max_batch_timeout = 1');
+  // AI binding 在 wrangler dev 需要登入 Cloudflare；測試改用 mock-worker 裡的假 Workers AI
+  toml = toml.replace(/^\[ai\]\nbinding = "AI"\n/m, '');
   if (process.env.E2E_NO_QUEUE) toml = toml.replace(/\[\[queues\.(producers|consumers)\]\][\s\S]*?(?=\n\n|\n#|$)/g, '');
   writeFileSync(cfg, toml);
 }
@@ -36,7 +38,7 @@ sh(
 
 const dev = spawn(
   'npx',
-  ['wrangler', 'dev', '--test-scheduled', '-c', cfg, '--port', String(PORT), '--persist-to', persist, '--var', `LINE_CHANNEL_SECRET:${SECRET}`, '--var', 'LINE_CHANNEL_ACCESS_TOKEN:x', '--var', 'GOOGLE_CLIENT_ID:x', '--var', 'GOOGLE_CLIENT_SECRET:x', '--var', 'ADMIN_EMAILS:Admin@Example.com'],
+  ['wrangler', 'dev', '--test-scheduled', '-c', cfg, '--port', String(PORT), '--persist-to', persist, '--var', `LINE_CHANNEL_SECRET:${SECRET}`, '--var', 'LINE_CHANNEL_ACCESS_TOKEN:x', '--var', 'GOOGLE_CLIENT_ID:x', '--var', 'GOOGLE_CLIENT_SECRET:x', '--var', 'ADMIN_EMAILS:Admin@Example.com', '--var', 'GEMINI_API_KEY:x'],
   { stdio: ['ignore', 'pipe', 'pipe'], detached: true },
 );
 let logs = '';
@@ -341,6 +343,89 @@ try {
   r = await api('/api/operations');
   check('操作紀錄', r.body.items.length >= 3);
 
+  // ---------- 免費 AI 文件判讀（AI 是歸檔後的獨立工作） ----------
+  const byName = async (name) => (await api('/api/files?limit=200')).body.items.find((f) => f.original_name === name);
+  const waitAi = async (name, until = (f) => !['queued', 'running'].includes(f.ai_status)) => {
+    for (let i = 0; i < 80; i++) {
+      const f = await byName(name);
+      if (f && f.status === 'done' && f.ai_status && until(f)) return (await api(`/api/files/${f.id}`)).body;
+      await sleep(400);
+    }
+    return byName(name);
+  };
+  const aiCalls = async () => (await (await fetch(BASE + '/api/__ai')).json());
+  let ai = (await api('/api/settings')).body.ai;
+  check('沒有 Claude 金鑰時預設用免費的 Workers AI，自動改名預設關閉', ai.provider === 'workers' && ai.status.ready && ai.features.rename === false && ai.onlyUnmatched === true && ai.threshold === 0.85 && ai.dailyLimit === 100, JSON.stringify({ p: ai.provider, f: ai.features, t: ai.threshold }));
+  const f1ai = (await api(`/api/files/${f1.id}`)).body;
+  check('規則已分類的檔案不呼叫 AI', f1ai.ai_status === 'skipped' && /規則/.test(f1ai.ai_error ?? ''), JSON.stringify([f1ai.ai_status, f1ai.ai_error]));
+  r = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ai: { workersModel: 'rm -rf /' } }) });
+  check('不合法的模型名稱被拒絕', r.status === 400);
+
+  await webhook([ev('a1', 'file', '掃描檔A.pdf'), ev('a2', 'file', '不明檔案B.pdf'), ev('a3', 'file', '可疑檔案C.pdf')]);
+  const a1 = await waitAi('掃描檔A.pdf');
+  check('高信心＋既有資料夾 → AI 自動歸檔、加專案與標籤', a1?.ai_status === 'done' && a1.folder_path === 'Farnesene/分析數據/2026' && a1.classified_by === 'ai' && a1.unsorted === 0 && a1.project_name === 'Farnesene' && a1.tags.some((t) => t.name === 'AI標籤') && a1.ai_summary === 'GC 分析的測試摘要' && a1.ai_suggestion?.applied?.folder === true, JSON.stringify(a1));
+  check('自動改名預設關閉：只顯示建議檔名，不改原檔', a1?.stored_name !== 'AI建議檔名.pdf' && a1?.ai_suggestion?.suggestedName === 'AI建議檔名.pdf', JSON.stringify([a1?.stored_name, a1?.ai_suggestion?.suggestedName]));
+  check('AI 搬移的檔案真的在雲端的新位置', (await drive()).some((p) => p.endsWith('Farnesene/分析數據/2026/掃描檔A.pdf')), JSON.stringify(await drive()));
+  check('PDF 先轉成文字再交給模型（免費）', (await aiCalls()).some((c) => c.prompt.includes('AI_HIGH 這是一份 GC 分析報告')));
+  const a2 = await waitAi('不明檔案B.pdf');
+  check('低信心 → 留在原處，列入「AI 待確認」', a2?.ai_status === 'done' && a2.unsorted === 1 && a2.ai_suggestion?.folder === 'Farnesene/分析數據/2026' && !a2.ai_suggestion?.applied?.folder, JSON.stringify(a2));
+  r = await api('/api/files?status=ai_review');
+  check('「AI 待確認」清單與計數', r.body.items.some((f) => f.id === a2.id) && (await api('/api/stats')).body.aiReview >= 1, JSON.stringify(r.body.items.map((f) => f.original_name)));
+  const a3 = await waitAi('可疑檔案C.pdf');
+  const evilCall = (await aiCalls()).find((c) => c.prompt.includes('AI_EVIL'));
+  check('文件內容放在 <document> 裡當成資料', !!evilCall && /<document>[\s\S]*AI_EVIL[\s\S]*<\/document>/.test(evilCall.prompt));
+  check('不合法的路徑、不存在的專案、過多的標籤都不會被套用', a3?.unsorted === 1 && a3.ai_suggestion?.folder === null && a3.ai_suggestion?.project === null && a3.ai_suggestion?.tags.length <= 6 && a3.ai_suggestion?.warnings.some((w) => /不合法/.test(w)), JSON.stringify(a3?.ai_suggestion));
+
+  r = await post(`/api/files/${a2.id}/accept-ai`, { folder: '行政/確認過', project: 'Farnesene', name: '確認後的檔名.pdf' });
+  const a2b = (await api(`/api/files/${a2.id}`)).body;
+  check('編輯後採用 AI 建議（資料夾、專案、檔名）', r.status === 200 && a2b.folder_path === '行政/確認過' && a2b.stored_name === '確認後的檔名.pdf' && a2b.project_name === 'Farnesene' && a2b.unsorted === 0 && !!r.body.batchId, JSON.stringify(a2b));
+  await post(`/api/files/${a3.id}/ai/dismiss`, {});
+  check('略過的建議不再列入「AI 待確認」', !(await api('/api/files?status=ai_review')).body.items.some((f) => f.id === a3.id));
+
+  // 免費額度用完：檔案照常歸檔，AI 暫停並延後，不會改用付費模型
+  await webhook([ev('a4', 'file', '額度測試D.pdf')]);
+  const a4 = await waitAi('額度測試D.pdf');
+  ai = (await api('/api/settings')).body.ai;
+  check('免費額度用完 → 檔案照常歸檔、AI 延後並暫停', a4?.status === 'done' && a4.ai_status === 'deferred' && !!ai.status.paused && /免費額度/.test(ai.status.paused.reason), JSON.stringify([a4?.status, a4?.ai_status, a4?.ai_error, ai.status.paused]));
+  const callsBefore = (await aiCalls()).length;
+  await webhook([ev('a5', 'file', '暫停中收到E.pdf')]);
+  const a5 = await waitAi('暫停中收到E.pdf');
+  check('暫停期間收到的檔案先歸檔，AI 延後且不呼叫模型', a5?.status === 'done' && a5.ai_status === 'deferred' && (await aiCalls()).length === callsBefore, JSON.stringify([a5?.ai_status, a5?.ai_error]));
+  await post('/api/ai/resume', {});
+  r = await post(`/api/files/${a5.id}/ai`, {});
+  const a5b = await waitAi('暫停中收到E.pdf', (f) => f.ai_status === 'done');
+  check('恢復後重新分析可以完成', r.status === 200 && a5b?.ai_status === 'done' && a5b.classified_by === 'ai', JSON.stringify([r.status, r.body, a5b?.ai_status, a5b?.ai_error]));
+  ai = (await api('/api/settings')).body.ai;
+  check('今日用量（本地估算）有記錄', ai.status.today.count >= 3 && ai.status.today.units > 0 && ai.status.today.unitLabel === 'Neurons', JSON.stringify(ai.status.today));
+
+  // 每日件數上限
+  await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ai: { dailyLimit: ai.status.today.count } }) });
+  await post(`/api/files/${a3.id}/ai`, {});
+  const a3b = await waitAi('可疑檔案C.pdf');
+  check('超過每日上限 → 延後到隔天', a3b?.ai_status === 'deferred' && /每日上限/.test(a3b.ai_error ?? ''), JSON.stringify([a3b?.ai_status, a3b?.ai_error]));
+  await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ai: { dailyLimit: 100 } }) });
+  await post('/api/ai/resume', {});
+
+  // Gemini（外部 AI）：沒有允許的群組不送出
+  await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ai: { provider: 'gemini' } }) });
+  await webhook([ev('a6', 'file', '外部測試F.pdf')]);
+  const a6 = await waitAi('外部測試F.pdf');
+  check('使用 Gemini 時，沒有允許的群組不會送出', a6?.ai_status === 'skipped' && /外部 AI/.test(a6.ai_error ?? '') && !(await aiCalls()).some((c) => c.model.startsWith('gemini')), JSON.stringify([a6?.ai_status, a6?.ai_error]));
+  await patch('/api/groups/Cgroup1', { ai_external: true });
+  r = await post(`/api/files/${a6.id}/ai`, {});
+  const a6b = await waitAi('外部測試F.pdf', (f) => f.ai_status === 'done' || f.ai_status === 'failed');
+  check('群組允許後由 Gemini 分析（PDF 直接附上）', a6b?.ai_status === 'done' && a6b.ai_suggestion?.provider === 'gemini' && a6b.ai_summary === 'Gemini 測試摘要', JSON.stringify([a6b?.ai_status, a6b?.ai_error, a6b?.ai_suggestion]));
+  r = await api('/api/ai/gemini-models');
+  check('可以查詢 Gemini 可用模型', r.body?.items?.[0]?.id === 'gemini-flash-latest', JSON.stringify(r.body));
+  await patch('/api/groups/Cgroup1', { ai_external: false });
+
+  // 不使用 AI：照常歸檔
+  await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ai: { provider: 'off' } }) });
+  await webhook([ev('a7', 'file', '關閉測試G.pdf')]);
+  const a7 = await waitAi('關閉測試G.pdf');
+  check('選「不使用 AI」時照常歸檔，AI 標成略過', a7?.status === 'done' && a7.ai_status === 'skipped' && /關閉/.test(a7.ai_error ?? ''), JSON.stringify([a7?.status, a7?.ai_status, a7?.ai_error]));
+  await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ai: { provider: 'workers' } }) });
+
   // ---------- 成員登入、權限、登出與撤銷 ----------
   const adminCookie = COOKIE;
   await post('/api/users', { email: 'Editor@Example.com', role: 'editor', groups: ['Cgroup1'] });
@@ -350,6 +435,7 @@ try {
   check('檢視者不能修改', (await post('/api/projects', { name: '不該建立' })).status === 403);
   check('檢視者看不到未授權群組的檔案', (await api('/api/files')).body.items.length === 0);
   check('檢視者不能進入成員管理', (await api('/api/users')).status === 403);
+  check('檢視者不能重新分析或改 AI 設定', (await post('/api/ai/backfill', {})).status === 403 && (await post('/api/ai/resume', {})).status === 403);
   check('檢視者不能看或改系統設定', (await api('/api/settings')).status === 403 && (await api('/api/settings', { method: 'PUT', body: '{"ai_enabled":"0"}' })).status === 403);
   const vst = (await api('/api/storages')).body;
   check('檢視者只看得到雲端空間名稱（沒有帳號與分享細節）', vst.items.length > 0 && vst.items.every((s) => !('account' in s) && !('config' in s) && !('folderLink' in s) && !('share' in s)) && vst.types.length === 0, JSON.stringify(vst));

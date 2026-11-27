@@ -18,14 +18,14 @@
 ### 分類（三層）
 1. **群組來源**：每個群組可以指定雲端空間、預設資料夾、預設專案、改名規則。
 2. **檔名規則**：關鍵字、副檔名、正規表示式、來源群組；路徑變數 `{group}` `{yyyy}` `{MM}` `{dd}` `{sender}` `{ext}`；可同時指定專案與標籤；規則模擬器即時預覽。
-3. **AI 判讀內容**（選用，Claude）：讀 PDF、Word、Excel、簡報、圖片，產生摘要與標籤；規則判斷不了時建議資料夾，把握度高於門檻就自動歸檔，否則留在「待分類」並提供一鍵採用。
+3. **AI 判讀內容**（預設免費的 Cloudflare Workers AI；可改用 Gemini 免費 API 或付費的 Claude）：檔案先照群組與規則存好，AI 之後才在背景讀內容，產生摘要與標籤；規則判斷不了時建議資料夾，把握度高於門檻、而且是既有資料夾才自動歸檔，否則列入「AI 待確認」，可以採用、編輯或略過。AI 失敗、關閉或額度用完都不影響收檔。
 
 ### 管理
 | 功能 | 說明 |
 |---|---|
 | 檔案來源面板 | 依群組、專案、標籤、年度、檔案類型篩選；只看最新版本 |
 | 搜尋 | 全文搜尋（D1 FTS5 trigram，支援中文任意片段）＋選用的語意搜尋（Workers AI＋Vectorize） |
-| 問 AI | 用一句話查檔案與內容，回答附上檔案連結；只搜尋使用者有權限的群組 |
+| 問 AI | 用一句話查檔案與內容，回答附上檔案連結；只搜尋使用者有權限的群組（需要 Claude；免費的 AI 判讀不包含跨文件問答） |
 | 檔案（四種檢視） | **全部**：清單、篩選、多選批次操作；**資料夾**：像 Finder 的固定寬度版面，左邊樹狀目錄、右邊檔案，拖拉搬移、改名；**專案**：像 Trello 的看板，把卡片拖到別欄就換專案；**標籤**：標籤清單＋檔案，拖到標籤上就加標籤 |
 | 版本管理 | 自動辨識 v1、v2、Final、修正版、(1)…，同一份文件的版本串在一起，可比對內文差異 |
 | 重複偵測 | 依雲端回傳的雜湊判斷內容相同的檔案，移到 `_重複檔案`，可選擇保留或刪除 |
@@ -72,7 +72,7 @@
 LINE 群組 A/B/C ──webhook──▶ /webhook（驗簽、去重、群組設定）──▶ Queue
 Email 附件 ──Email Routing──▶ email()  ─┐                         │
 管理介面上傳 ──▶ /api/upload ───────────┼──────────────▶ 歸檔流程 ◀─┘
-                                        │   群組設定 → 檔名規則 → AI 判讀
+                                        │   群組設定 → 檔名規則 → 歸檔 → AI 判讀（背景）
                                         │   → 上傳雲端 → 去重 → 版本 → 標籤／專案 → 索引 → 通知／Webhook
 管理介面（PWA）──▶ /api/*（Google 登入 Session ＋ 角色與群組權限）
 ```
@@ -85,7 +85,9 @@ src/worker/
   ingest.ts       Email 附件、手動上傳
   processor.ts    歸檔流程與重試
   rules.ts        檔名規則引擎（純函式）
-  ai.ts           Claude 文件判讀與自然語言查詢
+  ai.ts           AI 引擎：Workers AI（免費）、Gemini 免費 API、Claude；問 AI
+  ai-schema.ts    AI 共用的提示詞、JSON Schema 與輸出驗證（路徑、專案白名單）
+  ai-job.ts       AI 背景工作：額度預留、暫停與重試、安全套用
   extract.ts      Office／文字檔內容擷取
   versions.ts     版本辨識
   learn.ts        從手動搬移學習規則
@@ -156,7 +158,8 @@ test/             單元測試與端對端測試
 | `LINE_CHANNEL_ACCESS_TOKEN` | Secret | LINE Channel access token |
 | `ADMIN_EMAILS` | Text | 管理員的 Google 帳號 email，多個用逗號分隔 |
 | `SESSION_TTL_DAYS`、`SESSION_IDLE_DAYS` | Text（選用） | 登入有效天數（預設 30）、閒置多久需重新登入（預設 7） |
-| `ANTHROPIC_API_KEY` | Secret（選用） | AI 文件判讀 |
+| `GEMINI_API_KEY` | Secret（選用） | Gemini 免費 API（Google AI Studio 建立，專案不要開 Billing） |
+| `ANTHROPIC_API_KEY` | Secret（選用） | Claude（付費）：AI 判讀與「問 AI」 |
 | `MS_CLIENT_ID`、`MS_CLIENT_SECRET`、`DROPBOX_APP_KEY`、`DROPBOX_APP_SECRET` | Secret（選用） | OneDrive、Dropbox |
 
 變數儲存後如果沒有自動生效，到 **Deployments** 對最新一筆按重新部署。
@@ -201,9 +204,29 @@ test/             單元測試與端對端測試
 
 iCloud Drive 沒有伺服器可用的上傳 API，因此不支援。
 
-### AI（選用）
+### AI 文件判讀（免費）
 
-設定 `ANTHROPIC_API_KEY` 後啟用。預設模型 `claude-opus-5-5`（`wrangler.toml` 的 `AI_MODEL`），依用量計費；可以在「系統設定」整體關閉，或在「群組設定」對個別群組關閉。語意搜尋另外需要 Workers AI 與 Vectorize（見 `wrangler.toml` 最下方）。
+預設使用 **Cloudflare Workers AI**：跑在你自己的 Cloudflare 帳號裡，`wrangler.toml` 已經有 `[ai]` binding，部署後就能用，不需要任何金鑰。在「設定 → 一般 → AI 文件判讀」可以調整：
+
+| 設定 | 預設 | 說明 |
+|---|---|---|
+| AI 引擎 | Workers AI | 也可以選 Gemini 免費 API（要設定 `GEMINI_API_KEY`）、Claude（付費，要設定 `ANTHROPIC_API_KEY`）或不使用 AI |
+| 功能 | 摘要、標籤、分類建議 | 自動改名、重要資訊擷取預設關閉 |
+| 每日分析上限 | 100 份 | 超過就暫停到額度重置，等待中的檔案之後補做 |
+| 每日 Neurons 預算 | 9,000 | Workers AI 免費 10,000／天；付費方案超過會計費，這個上限讓 GrabIt 先停下來 |
+| 自動分類信心門檻 | 85% | 模型自評的分數，未校準；低於門檻或是新資料夾的留在「AI 待確認」 |
+| 只有規則無法分類時才呼叫 AI | 開 | 規則已分類的檔案不會被 AI 改動 |
+| 未授權的群組不送交外部 AI | 開 | 用 Gemini 時，只送「群組設定」勾選「允許送交外部 AI」的群組 |
+
+運作方式：
+
+- **歸檔和 AI 分開**：檔案先照群組與規則上傳完成，AI 是之後的背景工作（`ai_status`：等待、完成、延後、失敗、略過）。AI 失敗、關閉或額度用完，檔案都已經安全歸檔。
+- **免費額度控制**：每天的件數與 Neurons 用單一 SQL 原子預留，並行也不會超量；Workers AI 回報 4006（免費額度用完）或 Gemini 回報每日上限時，暫停到重置時間（Workers AI 是 UTC 午夜、Gemini 是美西午夜），每 5 分鐘的排程會在重置後補做；**不會改用付費模型**。用量是依模型回報的 token 數換算的本地估算，實際用量以 Cloudflare／Google 後台為準。
+- **讀內容**：Word、Excel、簡報、純文字直接擷取文字；PDF 用 Workers AI 免費的 `toMarkdown` 轉文字（掃描檔可能讀不到字）；Workers AI 不讀圖片內容，只依檔名判斷並標示出來。Gemini 與 Claude 可以直接讀 PDF 與圖片。送給 Workers AI 的內容最多 4,000 字。
+- **驗證**：模型的輸出一律當成不可信的資料：檢查型別、長度、標籤數（最多 6 個）、信心區間；資料夾路徑有 `..` 或指到系統資料夾一律不採用；專案只能是既有專案；只有「既有資料夾＋把握度夠高＋規則沒分類＋沒被手動調整過」才自動搬移。文件內容包在 `<document>` 裡，提示詞要求模型把裡面的文字當資料、不執行其中的指令。
+- **檔案資訊**：顯示建議檔名、專案、位置、標籤、摘要、信心（未校準）與限制說明，可以採用、編輯後採用、略過或重新分析；採用會記在歸檔紀錄，可以復原。
+- 「設定 → 一般 → AI 文件判讀」可以把還沒判讀過的舊檔案排入分析（一樣受每日上限限制）。
+- 語意搜尋另外需要 Vectorize（見 `wrangler.toml` 最下方）。
 
 ### Email 收件（選用）
 
@@ -245,8 +268,9 @@ npm run build:demo
 | 項目 | 說明 |
 |---|---|
 | LINE | 只接收訊息與回覆通知，不用付費訊息額度 |
-| Cloudflare | 個人用量多在免費額度內。AI 判讀與大型檔案需要較多 CPU 時間，建議使用 Workers Paid（每月 5 美元） |
-| Claude API | 依用量計費；可以整體或依群組關閉 |
+| Cloudflare | 個人用量多在免費額度內。Workers AI 每天 10,000 Neurons 免費（約 50–100 份文件，依長度），GrabIt 會在預算內停下來；大型檔案需要較多 CPU 時間時可考慮 Workers Paid（每月 5 美元） |
+| Gemini 免費 API | 免費，但有每分鐘與每日上限；免費版會用送出的內容改善 Google 產品，只送允許的群組 |
+| Claude API | 選用，依用量計費；可以整體或依群組關閉 |
 | 雲端空間 | 使用你自己的帳號空間；Dropbox 單檔上限 150MB |
 
 已知限制：Bot 只收得到加入群組之後的檔案；一個群組只能有一個官方帳號；LINE 上的檔案只保存一段時間，授權失效太久可能來不及補抓；跨雲端空間搬移檔案目前不支援（同一空間內可以自由搬移）。

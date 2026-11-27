@@ -1,11 +1,12 @@
-// 歸檔流程：取得內容 → 三層分類（群組 → 規則 → AI）→ 上傳 → 去重 → 版本 → 標籤／專案 → 索引 → 通知
+// 歸檔流程：取得內容 → 分類（群組 → 規則）→ 上傳 → 去重 → 版本 → 標籤／專案 → 索引 → 通知 → 排入 AI 判讀（獨立的背景工作）
 import type { Env, FileJob, WaitUntil } from './env';
 import { PermanentError, RetryLaterError } from './env';
-import { addTags, getFile, getGroup, getSetting, groupDisplayName, listRules, log, projectIdByName, type FileRow, type GroupRow } from './db';
-import { classify, renderPath, splitList, templateVars, type ClassifyResult, type Rule } from './rules';
+import { addTags, getFile, getGroup, groupDisplayName, listRules, log, type FileRow, type GroupRow } from './db';
+import { classify, splitList, type ClassifyResult, type Rule } from './rules';
 import { downloadContent, getTranscodingStatus } from './line';
-import { getStorage, providerFor, StorageError, type Body, type StorageRow } from './storage';
-import { aiEngine, AI_MAX_BYTES, type AnalyzeResult } from './ai';
+import { getStorage, providerFor, StorageError, type Body } from './storage';
+import { AI_MAX_BYTES } from './ai';
+import { queueAi, runAiJob } from './ai-job';
 import { extractContent, type Extracted } from './extract';
 import { versionInfo } from './versions';
 import { indexFile } from './search';
@@ -63,47 +64,6 @@ export function lineSource(env: Env, file: FileRow): ContentSource {
   };
 }
 
-async function existingFolders(env: Env, storageId: number, vars: Record<string, string>): Promise<string[]> {
-  const r = await env.DB.prepare(
-    "SELECT folder_path, COUNT(*) AS n FROM files WHERE status = 'done' AND storage_id = ? AND folder_path IS NOT NULL AND folder_path NOT LIKE '待分類%' GROUP BY folder_path ORDER BY n DESC LIMIT 80",
-  )
-    .bind(storageId)
-    .all<{ folder_path: string }>();
-  // 規則的路徑是範本（例如 {yyyy}），先代入這個檔案的值，避免建出名字叫「{yyyy}」的資料夾
-  const fromRules = (await env.DB.prepare('SELECT DISTINCT target_path FROM rules WHERE enabled = 1').all<{ target_path: string }>()).results.map((x) => renderPath(x.target_path, vars));
-  return [...new Set([...r.results.map((x) => x.folder_path), ...fromRules])];
-}
-
-async function runAi(env: Env, file: FileRow, group: GroupRow | null, storage: StorageRow, data: ArrayBuffer | null, mime: string, extracted: Extracted): Promise<AnalyzeResult | null> {
-  if (group && !group.ai_enabled) return null;
-  const engine = await aiEngine(env);
-  if (!engine) return null;
-  try {
-    const [folders, projects, tags] = await Promise.all([
-      existingFolders(env, storage.id, fileVars(env, file, group)),
-      env.DB.prepare('SELECT name FROM projects ORDER BY name').all<{ name: string }>(),
-      env.DB.prepare('SELECT t.name FROM tags t LEFT JOIN file_tags ft ON ft.tag_id = t.id GROUP BY t.id ORDER BY COUNT(ft.file_id) DESC LIMIT 80').all<{ name: string }>(),
-    ]);
-    return await engine.analyze({
-      fileName: file.original_name,
-      mime,
-      data,
-      extracted,
-      groupName: groupDisplayName(group, file.group_id),
-      folders,
-      projects: projects.results.map((p) => p.name),
-      tags: tags.results.map((t) => t.name),
-    });
-  } catch (e) {
-    await log(env, 'warn', 'ai', `AI 判讀失敗，改用規則分類：${(e as Error).message}`, file.id);
-    return null;
-  }
-}
-
-function fileVars(env: Env, file: FileRow, group: GroupRow | null): Record<string, string> {
-  return templateVars({ fileName: file.original_name, groupId: file.group_id, groupName: groupDisplayName(group, file.group_id), senderName: file.sender_name, receivedAt: new Date(file.received_at), timeZone: env.TIMEZONE || 'Asia/Taipei' });
-}
-
 export interface ArchiveOptions {
   /** 手動上傳時使用者指定的資料夾 */
   folderOverride?: string | null;
@@ -135,9 +95,9 @@ export async function archiveFile(env: Env, fileId: number, source: ContentSourc
   let body = content.body;
   let data: ArrayBuffer | null = null;
   let extracted: Extracted = { kind: 'none', text: '' };
+  // Office、純文字檔先擷取文字，給全文搜尋用（PDF、圖片的內容由之後的 AI 判讀補上）
   const small = content.length != null ? content.length <= AI_MAX_BYTES : true;
-  const wantsAi = !group || !!group.ai_enabled;
-  if (small && (wantsAi || TEXT_EXTRACT_EXT.has(file.ext))) {
+  if (small && TEXT_EXTRACT_EXT.has(file.ext)) {
     const buf = body instanceof ArrayBuffer ? body : await new Response(body).arrayBuffer();
     body = buf;
     if (buf.byteLength <= AI_MAX_BYTES) {
@@ -146,18 +106,6 @@ export async function archiveFile(env: Env, fileId: number, source: ContentSourc
     }
   }
 
-  // 第三層：AI 判讀內容（摘要、標籤一律保存；分類只在規則沒有符合時採用）
-  const ai = wantsAi ? await runAi(env, file, group, storage, data, content.mime, extracted) : null;
-  const threshold = Number((await getSetting(env, 'ai_threshold')) ?? 0.7);
-  if (ai) {
-    tagNames.push(...ai.tags);
-    projectId ??= await projectIdByName(env, ai.project);
-    if (!result.rule && ai.folder && ai.confidence >= threshold) {
-      folder = renderPath(ai.folder, fileVars(env, file, group));
-      classifiedBy = 'ai';
-      unsorted = false;
-    }
-  }
   if (opts.folderOverride) {
     folder = opts.folderOverride;
     classifiedBy = 'manual';
@@ -168,15 +116,14 @@ export async function archiveFile(env: Env, fileId: number, source: ContentSourc
 
   const uploaded = await provider.upload(folder, result.storedName, content.mime, body, body instanceof ArrayBuffer ? body.byteLength : content.length);
   const version = versionInfo(file.original_name);
-  const engine = ai ? await aiEngine(env) : null;
   const common = {
     hash: uploaded.hash,
     size: uploaded.size,
     mime: content.mime,
     rule: result.rule?.id ?? null,
-    summary: ai?.summary ?? null,
-    suggestion: ai ? JSON.stringify({ folder: ai.folder, project: ai.project, tags: ai.tags, confidence: ai.confidence, reason: ai.reason, model: engine?.name }) : null,
-    text: (extracted.text || ai?.text || '').slice(0, 20_000) || null,
+    summary: null as string | null,
+    suggestion: null as string | null,
+    text: extracted.text.slice(0, 20_000) || null,
   };
 
   // 去重：內容相同就移到「_重複檔案」，可以在介面決定保留或刪除
@@ -193,7 +140,7 @@ export async function archiveFile(env: Env, fileId: number, source: ContentSourc
       )
         .bind(dup.id, common.hash, common.size, common.mime, storage.id, moved.ref, moved.link ?? uploaded.link, moved.name, DUPLICATE_FOLDER, folder, common.rule, projectId, classifiedBy, unsorted ? 1 : 0, common.summary, common.suggestion, common.text, version.key, version.label, version.rank, moved.root ?? uploaded.root ?? null, fileId)
         .run();
-      if (tagNames.length) await addTags(env, fileId, tagNames, result.rule ? 'rule' : 'ai');
+      if (tagNames.length) await addTags(env, fileId, tagNames, 'rule');
       await log(env, 'info', 'duplicate', `「${file.original_name}」與 ${dup.folder_path}/${dup.stored_name} 內容相同，已放到 ${DUPLICATE_FOLDER}`, fileId);
       return;
     }
@@ -206,12 +153,11 @@ export async function archiveFile(env: Env, fileId: number, source: ContentSourc
   )
     .bind(common.hash, common.size, common.mime, storage.id, uploaded.ref, uploaded.link, uploaded.name, folder, common.rule, projectId, classifiedBy, unsorted ? 1 : 0, common.summary, common.suggestion, common.text, version.key, version.label, version.rank, uploaded.root ?? null, fileId)
     .run();
-  if (tagNames.length) await addTags(env, fileId, tagNames, result.rule ? 'rule' : 'ai');
+  if (tagNames.length) await addTags(env, fileId, tagNames, 'rule');
   await indexFile(env, fileId);
 
   const how: Record<string, string> = {
     rule: `規則「${result.rule?.name}」`,
-    ai: `AI 判讀（把握度 ${Math.round((ai?.confidence ?? 0) * 100)}%）`,
     manual: '手動指定',
     group: '群組預設資料夾（待確認）',
     none: '待分類',
@@ -223,8 +169,15 @@ export async function archiveFile(env: Env, fileId: number, source: ContentSourc
   }
   await emitWebhook(env, {
     event: 'file.archived',
-    file: { id: fileId, name: uploaded.name, original_name: file.original_name, folder, storage: storage.name, link: uploaded.link, group: groupDisplayName(group, file.group_id), source: file.source, summary: ai?.summary ?? null, tags: tagNames },
+    file: { id: fileId, name: uploaded.name, original_name: file.original_name, folder, storage: storage.name, link: uploaded.link, group: groupDisplayName(group, file.group_id), source: file.source, summary: null, tags: tagNames },
   });
+
+  // AI 判讀是獨立的附加工作：檔案已經安全歸檔，AI 失敗、關閉或額度用完都不影響
+  try {
+    await queueAi(env, null, fileId);
+  } catch (e) {
+    await log(env, 'warn', 'ai', `無法排入 AI 判讀：${(e as Error).message}`, fileId);
+  }
 }
 
 async function markFailed(env: Env, fileId: number, message: string): Promise<void> {
@@ -286,6 +239,12 @@ export async function retryPending(env: Env, limit = 5): Promise<number> {
 
 export async function handleQueue(batch: MessageBatch<FileJob>, env: Env): Promise<void> {
   for (const msg of batch.messages) {
+    if (msg.body.task === 'ai') {
+      // AI 判讀自己處理延後與重試（額度重置後由排程撿回），佇列這邊一律確認
+      await runAiJob(env, msg.body.fileId).catch(() => {});
+      msg.ack();
+      continue;
+    }
     const r = await processWithStatus(env, msg.body.fileId, msg.attempts);
     if (r.outcome === 'retry') msg.retry({ delaySeconds: r.delaySeconds });
     else msg.ack();

@@ -1,5 +1,5 @@
 // 展示版的模擬 AI：依檔名關鍵字判斷，不會連到任何外部服務
-import type { AiEngine, AnalyzeInput, AnalyzeResult, AskTools, SearchHit } from '../../src/worker/ai';
+import type { AiEngine, AnalyzeInput, EngineOutput, AskTools, SearchHit } from '../../src/worker/ai';
 
 interface Topic {
   kw: string[];
@@ -41,22 +41,35 @@ export function fakeContent(name: string): string {
 }
 
 export const demoAi: AiEngine = {
-  name: '展示用模擬 AI',
-  async analyze(input: AnalyzeInput): Promise<AnalyzeResult> {
+  provider: 'demo',
+  model: '展示用模擬 AI',
+  async analyze(input: AnalyzeInput): Promise<EngineOutput> {
     const content = fakeContent(input.fileName);
     const hit = topicOf(input.fileName, '');
     if (!hit) {
-      return { summary: `檔名「${input.fileName}」沒有明確的主題線索，建議人工確認。`, tags: [], folder: null, project: null, confidence: 0.3, reason: '檔名與內容都沒有可判斷的關鍵字', text: content };
+      return {
+        raw: { summary: `檔名「${input.fileName}」沒有明確的主題線索，建議人工確認。`, tags: [], suggested_name: '', project: '', folder: '', confidence: 0.3, reason: '檔名與內容都沒有可判斷的關鍵字', key_info: [], warnings: [], key_text: content },
+        read: 'full',
+        text: content,
+      };
     }
     const { t } = hit;
     const folder = input.folders.find((f) => f.includes(t.folder.split('/').pop()!)) ?? t.folder;
+    const ext = input.fileName.includes('.') ? input.fileName.slice(input.fileName.lastIndexOf('.')) : '';
     return {
-      summary: `這是一份${t.kind}（來自${input.groupName}）。${t.lines.slice(0, 2).join('；')}。`,
-      tags: t.tags,
-      folder,
-      project: t.project && input.projects.includes(t.project) ? t.project : null,
-      confidence: hit.inName ? 0.86 : 0.62,
-      reason: `檔名含「${t.kw.find((k) => input.fileName.toLowerCase().includes(k)) ?? t.kw[0]}」，內容是${t.kind}`,
+      raw: {
+        summary: `這是一份${t.kind}（來自${input.groupName}）。${t.lines.slice(0, 2).join('；')}。`,
+        tags: t.tags,
+        suggested_name: `${t.kind}_${t.lines[0]!.split('：').pop()!.replace(/[\s/]+/g, '')}${ext}`,
+        folder,
+        project: t.project && input.projects.includes(t.project) ? t.project : '',
+        confidence: hit.inName ? 0.9 : 0.62,
+        reason: `檔名含「${t.kw.find((k) => input.fileName.toLowerCase().includes(k)) ?? t.kw[0]}」，內容是${t.kind}`,
+        key_info: t.lines.slice(0, 3),
+        warnings: [],
+        key_text: content,
+      },
+      read: 'full',
       text: content,
     };
   },

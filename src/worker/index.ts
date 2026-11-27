@@ -7,6 +7,7 @@ import { manage } from './api/manage';
 import { HttpError, need, type AppEnv } from './api/util';
 import { handleWebhook } from './webhook';
 import { handleQueue, retryPending } from './processor';
+import { retryAi } from './ai-job';
 import { handleEmail } from './ingest';
 import { buildAuthUrl, exchangeCode, OAUTH } from './storage/oauth';
 import { FolderCache } from './storage/cache';
@@ -111,5 +112,5 @@ export default {
   fetch: app.fetch,
   queue: (batch: MessageBatch<FileJob>, env: Env) => handleQueue(batch, env),
   email: (message: ForwardableEmailMessage, env: Env) => handleEmail(message, env),
-  scheduled: (_event: ScheduledController, env: Env, ctx: ExecutionContext) => ctx.waitUntil(retryPending(env)),
+  scheduled: (_event: ScheduledController, env: Env, ctx: ExecutionContext) => ctx.waitUntil(retryPending(env).then(() => retryAi(env))),
 } satisfies ExportedHandler<Env, FileJob>;
