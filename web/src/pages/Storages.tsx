@@ -110,7 +110,8 @@ export function Storages() {
                   </div>
                 )}
                 {s.shareError && <div className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>分享設定有問題：{s.shareError}</div>}
-                {admin && s.filesOutside > 0 && <Consolidate storage={s} onDone={reload} />}
+                {admin && s.rootMissing && <RecreateRoot storage={s} onDone={reload} />}
+                {admin && !s.rootMissing && (s.filesOutside > 0 || s.extraFolders > 0) && <Consolidate storage={s} onDone={reload} />}
               </div>
               {admin && (
                 <div className="row">
@@ -155,25 +156,52 @@ function CopyLink({ link }: { link: string }) {
   );
 }
 
+/** 專屬資料夾被刪除：由使用者決定要不要重建（系統不會自己偷偷建立新的） */
+function RecreateRoot({ storage, onDone }: { storage: Storage; onDone: () => void }) {
+  const toast = useToast();
+  const run = async () => {
+    try {
+      await api(`/storages/${storage.id}/recreate-root`, { method: 'POST', json: {} });
+      toast('已重新建立專屬資料夾');
+      onDone();
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
+  };
+  return (
+    <div className="notice danger" style={{ marginTop: 10, marginBottom: 0 }}>
+      <span className="grow">專屬資料夾「{storage.root_folder}」已被刪除或移到垃圾桶，新的檔案會暫停歸檔。可以先到 Google Drive 垃圾桶還原；確定不要了再重新建立。</span>
+      <button className="btn sm" onClick={run}>
+        重新建立資料夾
+      </button>
+    </div>
+  );
+}
+
 /** 把散落在舊位置的檔案搬進專屬資料夾：分批呼叫直到完成 */
 function Consolidate({ storage, onDone }: { storage: Storage; onDone: () => void }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [left, setLeft] = useState(storage.filesOutside);
   const run = async () => {
-    if (!(await ask(`把 ${storage.filesOutside} 個不在「${storage.root_folder}」裡的舊檔案搬進來？會保留原本的子資料夾結構，Google Drive 上的檔案連結不變。`, '開始整理'))) return;
+    if (!(await ask(`把所有檔案集中到「${storage.root_folder}」？${storage.filesOutside ? `會把 ${storage.filesOutside} 個在外面的檔案搬進來（保留子資料夾結構，Google Drive 連結不變），` : ''}再把 GrabIt 之前多建、已經清空的資料夾移到垃圾桶。有檔案的資料夾不會被刪除。`, '開始整理'))) return;
     setBusy(true);
     let moved = 0;
     let errors = 0;
     try {
       for (let i = 0; i < 500; i++) {
-        const r = await api<{ moved: number; remaining: number; errors: string[] }>(`/storages/${storage.id}/consolidate`, { method: 'POST', json: {} });
+        const r = await api<{ moved: number; remaining: number; errors: string[]; removedFolders: string[]; keptFolders: string[] }>(`/storages/${storage.id}/consolidate`, { method: 'POST', json: {} });
         moved += r.moved;
         errors += r.errors.length;
         setLeft(r.remaining);
-        if (!r.remaining || (!r.moved && !r.errors.length)) break;
+        if (!r.remaining) {
+          const cleaned = r.removedFolders.length ? `，清掉 ${r.removedFolders.length} 個多餘的資料夾` : '';
+          const kept = r.keptFolders.length ? `（${r.keptFolders.join('、')} 裡還有不是 GrabIt 管理的檔案，保留下來）` : '';
+          toast(errors ? `已搬移 ${moved} 個檔案，${errors} 個失敗（見歸檔紀錄）` : `整理完成：搬移 ${moved} 個檔案${cleaned}${kept}`, errors ? 'error' : 'ok');
+          break;
+        }
+        if (!r.moved && !r.errors.length) break;
       }
-      toast(errors ? `已搬移 ${moved} 個檔案，${errors} 個失敗（見歸檔紀錄）` : `已把 ${moved} 個檔案整理到專屬資料夾`, errors ? 'error' : 'ok');
     } catch (e) {
       toast((e as Error).message, 'error');
     } finally {
@@ -183,9 +211,13 @@ function Consolidate({ storage, onDone }: { storage: Storage; onDone: () => void
   };
   return (
     <div className="notice warn" style={{ marginTop: 10, marginBottom: 0 }}>
-      <span className="grow">有 {left} 個舊檔案不在專屬資料夾裡（散落在雲端硬碟其他位置）。</span>
+      <span className="grow">
+        {left > 0 ? `有 ${left} 個檔案不在專屬資料夾裡` : ''}
+        {left > 0 && storage.extraFolders > 0 ? '，' : ''}
+        {storage.extraFolders > 0 ? `雲端硬碟裡還有 ${storage.extraFolders} 個 GrabIt 之前多建的資料夾` : ''}。
+      </span>
       <button className="btn sm" disabled={busy} onClick={run}>
-        {busy ? `整理中…剩 ${left} 個` : '整理到專屬資料夾'}
+        {busy ? `整理中…剩 ${left} 個` : '合併並清理'}
       </button>
     </div>
   );

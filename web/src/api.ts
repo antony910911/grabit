@@ -136,6 +136,7 @@ export interface Group {
   project_id: number | null;
   project_name: string | null;
   file_count: number;
+  outside_project: number;
   bytes: number;
   last_file_at: string | null;
   members: string[];
@@ -165,6 +166,8 @@ export interface Storage {
   share: 'private' | 'members' | 'anyone' | null;
   shareError: string | null;
   filesOutside: number;
+  rootMissing: boolean;
+  extraFolders: number;
 }
 
 export interface Stats {

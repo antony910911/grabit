@@ -155,6 +155,7 @@ export function Files() {
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [batchMove, setBatchMove] = useState(false);
+  const [bulkLabel, setBulkLabel] = useState(false);
   const [filterSheet, setFilterSheet] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -335,6 +336,9 @@ export function Files() {
               <button className="btn sm" disabled={!selected.size} onClick={() => setBatchMove(true)}>
                 移動到…
               </button>
+              <button className="btn sm" disabled={!selected.size} onClick={() => setBulkLabel(true)}>
+                專案／標籤…
+              </button>
               <button className="btn sm" disabled={!selected.size} onClick={batchDelete}>
                 刪除
               </button>
@@ -384,6 +388,18 @@ export function Files() {
             />
           </div>
         </Sheet>
+      )}
+      {bulkLabel && (
+        <BulkLabel
+          ids={[...selected]}
+          onClose={() => setBulkLabel(false)}
+          onDone={(msg) => {
+            setBulkLabel(false);
+            setSelecting(false);
+            toast(msg);
+            refresh();
+          }}
+        />
       )}
       {batchMove && (
         <BatchMove
@@ -439,6 +455,66 @@ export function BatchMove({ ids, folders, onClose, onDone }: { ids: number[]; fo
         <small>只會移動已歸檔的檔案。手動移動過的檔案，之後重新套用規則時不會被搬走。</small>
       </label>
       {projects.data && projects.data.items.length > 0 && <p className="muted small">要設定專案或標籤，請打開個別檔案。</p>}
+    </Sheet>
+  );
+}
+
+/** 多選後一次設定專案或加標籤 */
+export function BulkLabel({ ids, onClose, onDone }: { ids: number[]; onClose: () => void; onDone: (msg: string) => void }) {
+  const toast = useToast();
+  const projects = useLoad(() => api<{ items: Project[] }>('/projects'), []);
+  const [project, setProject] = useState<string>('keep');
+  const [tags, setTags] = useState('');
+  const [busy, setBusy] = useState(false);
+  const addTags = tags
+    .split(/[,，、]/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const go = async () => {
+    setBusy(true);
+    try {
+      const body: Record<string, unknown> = { ids };
+      if (project !== 'keep') body.projectId = project === 'none' ? null : Number(project);
+      if (addTags.length) body.addTags = addTags;
+      const r = await api<{ updated: number }>('/files/bulk', { method: 'POST', json: body });
+      onDone(`已更新 ${r.updated} 個檔案`);
+    } catch (e) {
+      toast((e as Error).message, 'error');
+      setBusy(false);
+    }
+  };
+  return (
+    <Sheet
+      title={`設定 ${ids.length} 個檔案的專案與標籤`}
+      onClose={onClose}
+      actions={
+        <>
+          <button className="btn" onClick={onClose}>
+            取消
+          </button>
+          <button className="btn primary" disabled={busy || (project === 'keep' && !addTags.length)} onClick={go}>
+            套用
+          </button>
+        </>
+      }
+    >
+      <label className="field">
+        <span>專案</span>
+        <select className="select" value={project} onChange={(e) => setProject(e.target.value)}>
+          <option value="keep">不變</option>
+          <option value="none">移出專案</option>
+          {projects.data?.items.map((p) => (
+            <option key={p.id} value={p.id}>
+              加入「{p.name}」
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field">
+        <span>加上標籤</span>
+        <input className="input" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="例：期末報告, FY115" />
+        <small>多個用逗號分隔；原本的標籤會保留</small>
+      </label>
     </Sheet>
   );
 }

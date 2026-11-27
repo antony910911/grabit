@@ -2,7 +2,7 @@
 import type { Env, FileJob, WaitUntil } from './env';
 import { PermanentError, RetryLaterError } from './env';
 import { addTags, getFile, getGroup, getSetting, groupDisplayName, listRules, log, projectIdByName, type FileRow, type GroupRow } from './db';
-import { classify, splitList, type ClassifyResult, type Rule } from './rules';
+import { classify, renderPath, splitList, templateVars, type ClassifyResult, type Rule } from './rules';
 import { downloadContent, getTranscodingStatus } from './line';
 import { getStorage, providerFor, StorageError, type Body, type StorageRow } from './storage';
 import { aiEngine, AI_MAX_BYTES, type AnalyzeResult } from './ai';
@@ -63,13 +63,14 @@ export function lineSource(env: Env, file: FileRow): ContentSource {
   };
 }
 
-async function existingFolders(env: Env, storageId: number): Promise<string[]> {
+async function existingFolders(env: Env, storageId: number, vars: Record<string, string>): Promise<string[]> {
   const r = await env.DB.prepare(
     "SELECT folder_path, COUNT(*) AS n FROM files WHERE status = 'done' AND storage_id = ? AND folder_path IS NOT NULL AND folder_path NOT LIKE '待分類%' GROUP BY folder_path ORDER BY n DESC LIMIT 80",
   )
     .bind(storageId)
     .all<{ folder_path: string }>();
-  const fromRules = (await env.DB.prepare('SELECT DISTINCT target_path FROM rules WHERE enabled = 1').all<{ target_path: string }>()).results.map((x) => x.target_path);
+  // 規則的路徑是範本（例如 {yyyy}），先代入這個檔案的值，避免建出名字叫「{yyyy}」的資料夾
+  const fromRules = (await env.DB.prepare('SELECT DISTINCT target_path FROM rules WHERE enabled = 1').all<{ target_path: string }>()).results.map((x) => renderPath(x.target_path, vars));
   return [...new Set([...r.results.map((x) => x.folder_path), ...fromRules])];
 }
 
@@ -79,7 +80,7 @@ async function runAi(env: Env, file: FileRow, group: GroupRow | null, storage: S
   if (!engine) return null;
   try {
     const [folders, projects, tags] = await Promise.all([
-      existingFolders(env, storage.id),
+      existingFolders(env, storage.id, fileVars(env, file, group)),
       env.DB.prepare('SELECT name FROM projects ORDER BY name').all<{ name: string }>(),
       env.DB.prepare('SELECT t.name FROM tags t LEFT JOIN file_tags ft ON ft.tag_id = t.id GROUP BY t.id ORDER BY COUNT(ft.file_id) DESC LIMIT 80').all<{ name: string }>(),
     ]);
@@ -97,6 +98,10 @@ async function runAi(env: Env, file: FileRow, group: GroupRow | null, storage: S
     await log(env, 'warn', 'ai', `AI 判讀失敗，改用規則分類：${(e as Error).message}`, file.id);
     return null;
   }
+}
+
+function fileVars(env: Env, file: FileRow, group: GroupRow | null): Record<string, string> {
+  return templateVars({ fileName: file.original_name, groupId: file.group_id, groupName: groupDisplayName(group, file.group_id), senderName: file.sender_name, receivedAt: new Date(file.received_at), timeZone: env.TIMEZONE || 'Asia/Taipei' });
 }
 
 export interface ArchiveOptions {
@@ -148,11 +153,7 @@ export async function archiveFile(env: Env, fileId: number, source: ContentSourc
     tagNames.push(...ai.tags);
     projectId ??= await projectIdByName(env, ai.project);
     if (!result.rule && ai.folder && ai.confidence >= threshold) {
-      folder = ai.folder
-        .split('/')
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .join('/');
+      folder = renderPath(ai.folder, fileVars(env, file, group));
       classifiedBy = 'ai';
       unsorted = false;
     }

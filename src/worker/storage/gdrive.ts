@@ -69,12 +69,13 @@ export class GoogleDrive implements StorageProvider {
     return r.id;
   }
 
+  /** 資料夾是否還在：只有確定被刪除（404／在垃圾桶）才算不在；網路或暫時性錯誤會往外丟，交給重試 */
   private async alive(id: string): Promise<boolean> {
-    try {
-      return !(await this.api<{ trashed: boolean }>(`${DRIVE}/files/${id}?fields=trashed`)).trashed;
-    } catch {
-      return false;
-    }
+    const token = await accessToken(this.ctx.env, this.row);
+    const res = await fetch(`${DRIVE}/files/${id}?fields=trashed`, { headers: { Authorization: `Bearer ${token}` } });
+    if (res.status === 404) return false;
+    if (!res.ok) throw await httpError('Google Drive', res);
+    return !((await res.json()) as { trashed?: boolean }).trashed;
   }
 
   private rootChecked: string | null = null;
@@ -90,16 +91,32 @@ export class GoogleDrive implements StorageProvider {
    * 專屬根資料夾：連結時在「我的雲端硬碟」建立一個全新的資料夾，用 ID 記住。
    * 之後所有檔案都放在這個資料夾裡；被刪除或移到垃圾桶時會自動重建一個新的。
    */
-  async rootId(): Promise<string> {
+  async rootId(opts: { create?: boolean } = {}): Promise<string> {
     const cfg = driveConfig(this.row);
-    if (cfg.root_id && (this.rootChecked === cfg.root_id || (await this.alive(cfg.root_id)))) {
-      this.rootChecked = cfg.root_id;
-      return cfg.root_id;
+    if (cfg.root_id && this.rootChecked === cfg.root_id) return cfg.root_id;
+    if (cfg.root_id) {
+      if (await this.alive(cfg.root_id)) {
+        this.rootChecked = cfg.root_id;
+        return cfg.root_id;
+      }
+      // 專屬資料夾被刪掉了：不自動另開新資料夾，請使用者在「雲端設定」決定
+      if (!opts.create) throw new StorageError(`「${this.row.name}」的專屬資料夾已被刪除或移到垃圾桶。請到「雲端設定」按「重新建立資料夾」，或從 Google Drive 垃圾桶還原。`, true);
     }
-    // 名稱重複時加上編號，確保是一個全新的資料夾
-    const base = this.row.root_folder || 'GrabIt';
-    let name = base;
-    for (let n = 2; n < 50 && (await this.findChild('root', name, true)); n++) name = `${base} (${n})`;
+    // 第一次使用：沿用 GrabIt 之前建立的同名資料夾，沒有才建立新的
+    const name = this.row.root_folder || 'GrabIt';
+    const existing = opts.create ? null : await this.findChild('root', name, true);
+    if (existing) {
+      const r = await this.ctx.env.DB.prepare(
+        "UPDATE storages SET config = json_set(json_set(CASE WHEN json_valid(config) THEN config ELSE '{}' END, '$.root_id', ?), '$.root_name', ?) WHERE id = ? AND json_extract(CASE WHEN json_valid(config) THEN config ELSE '{}' END, '$.root_id') IS ?",
+      )
+        .bind(existing, name, this.row.id, cfg.root_id ?? null)
+        .run();
+      const latest = await this.ctx.env.DB.prepare('SELECT config FROM storages WHERE id = ?').bind(this.row.id).first<{ config: string }>();
+      this.row.config = latest?.config ?? this.row.config;
+      this.rootChecked = driveConfig(this.row).root_id ?? existing;
+      if (r.meta.changes) await this.applySharing().catch(() => {});
+      return this.rootChecked;
+    }
     const created = await this.createFolder('root', name);
     // 同時有多個檔案在處理時可能都想建立資料夾：用條件式更新，只有一個會成功
     const r = await this.ctx.env.DB.prepare(
@@ -120,6 +137,44 @@ export class GoogleDrive implements StorageProvider {
     this.rootChecked = created;
     await this.applySharing().catch(() => {});
     return created;
+  }
+
+  /** 專屬資料夾目前的狀態（給「雲端設定」顯示用，不會建立任何東西） */
+  async rootStatus(): Promise<{ missing: boolean; extras: { id: string; name: string }[] }> {
+    const cfg = driveConfig(this.row);
+    const missing = cfg.root_id ? !(await this.alive(cfg.root_id)) : false;
+    // GrabIt 只看得到自己建立的檔案（drive.file），所以這裡列出的都是 GrabIt 之前建立的最上層資料夾
+    const query = `'root' in parents and mimeType='${FOLDER_MIME}' and trashed=false`;
+    const r = await this.api<{ files: { id: string; name: string }[] }>(`${DRIVE}/files?${new URLSearchParams({ q: query, fields: 'files(id,name)', pageSize: '100' })}`);
+    return { missing, extras: r.files.filter((f) => f.id !== cfg.root_id) };
+  }
+
+  /** 資料夾（含子資料夾）裡是否沒有任何檔案 */
+  private async isEmptyTree(folderId: string, budget = { folders: 200 }): Promise<boolean> {
+    if (--budget.folders < 0) return false;
+    const r = await this.api<{ files: { id: string; mimeType: string }[] }>(
+      `${DRIVE}/files?${new URLSearchParams({ q: `'${folderId}' in parents and trashed=false`, fields: 'files(id,mimeType)', pageSize: '200' })}`,
+    );
+    for (const f of r.files) {
+      if (f.mimeType !== FOLDER_MIME) return false;
+      if (!(await this.isEmptyTree(f.id, budget))) return false;
+    }
+    return true;
+  }
+
+  /** 把 GrabIt 之前多建、而且已經清空的最上層資料夾移到垃圾桶（有檔案的不會動） */
+  async removeEmptyExtras(): Promise<{ removed: string[]; kept: string[] }> {
+    const { extras } = await this.rootStatus();
+    const removed: string[] = [];
+    const kept: string[] = [];
+    for (const f of extras) {
+      if (await this.isEmptyTree(f.id)) {
+        await this.trash(f.id);
+        removed.push(f.name);
+      } else kept.push(f.name);
+    }
+    if (removed.length) await this.cache.clear();
+    return { removed, kept };
   }
 
   /** 專屬資料夾改名（只改名稱，ID 不變，檔案不用搬） */

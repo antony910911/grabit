@@ -32,7 +32,7 @@ export async function filesOutsideRoot(env: Env, row: StorageRow): Promise<numbe
 }
 
 /** 把散落在舊位置的檔案搬進專屬資料夾（保留原本的子資料夾結構）；每次處理一批 */
-export async function consolidate(env: Env, row: StorageRow, limit = 20): Promise<{ moved: number; remaining: number; errors: string[] }> {
+export async function consolidate(env: Env, row: StorageRow, limit = 20): Promise<{ moved: number; remaining: number; errors: string[]; removedFolders: string[]; keptFolders: string[] }> {
   const drive = new GoogleDrive({ env, row });
   const root = await drive.rootId();
   const files = await env.DB.prepare(
@@ -55,5 +55,15 @@ export async function consolidate(env: Env, row: StorageRow, limit = 20): Promis
     }
   }
   if (moved || errors.length) await log(env, errors.length ? 'warn' : 'info', 'storage', `整理到專屬資料夾：搬移 ${moved} 個檔案${errors.length ? `，${errors.length} 個失敗` : ''}`);
-  return { moved, remaining: await filesOutsideRoot(env, { ...row, config: JSON.stringify({ ...driveConfig(row), root_id: root }) }), errors };
+  const remaining = await filesOutsideRoot(env, { ...row, config: JSON.stringify({ ...driveConfig(row), root_id: root }) });
+  // 檔案都搬完了：順便把多出來、已經清空的舊 GrabIt 資料夾移到垃圾桶
+  let removedFolders: string[] = [];
+  let keptFolders: string[] = [];
+  if (!remaining) {
+    const r = await drive.removeEmptyExtras().catch(() => ({ removed: [], kept: [] }));
+    removedFolders = r.removed;
+    keptFolders = r.kept;
+    if (removedFolders.length) await log(env, 'info', 'storage', `清理多餘的空資料夾：${removedFolders.join('、')}（已移到 Google Drive 垃圾桶）`);
+  }
+  return { moved, remaining, errors, removedFolders, keptFolders };
 }
