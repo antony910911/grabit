@@ -104,4 +104,5 @@ export default {
     return worker.fetch(req, env, ctx);
   },
   queue: worker.queue,
+  scheduled: worker.scheduled,
 };

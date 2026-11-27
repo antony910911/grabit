@@ -2,7 +2,7 @@
 
 只要建立一個 GrabIt LINE Bot，加入多個 LINE 群組，就能把各群組上傳的檔案自動下載、分類、歸檔到你指定的雲端空間，並在同一個管理介面（電腦、手機都能用的 PWA）搜尋、整理、追蹤。
 
-- **全部跑在 Cloudflare**：Workers（後端＋管理介面）、Queues（背景處理與重試）、D1（資料庫＋全文搜尋）、Access（登入）。
+- **全部跑在 Cloudflare**：Workers（後端＋管理介面）、D1（資料庫＋全文搜尋）、Cron 排程（失敗重試）、Access（登入）；Queues 為選用。
 - **互動展示版**：`npm run build:demo` 會產生 `web/dist-demo/grabit-demo.html`，在瀏覽器裡執行完整的後端邏輯（資料、雲端與 AI 為模擬），不用部署就能試用。
 
 ## 功能
@@ -92,6 +92,8 @@ npx wrangler d1 create grabit
 ```
 
 把輸出的 `database_id` 貼到 `wrangler.toml`。
+
+（選用，需要 Workers Paid 方案）建立佇列後，取消 `wrangler.toml` 裡 queues 段落的註解。沒有佇列時，收到的檔案會直接處理，失敗的檔案由每 5 分鐘一次的排程自動重試。
 
 ```bash
 npx wrangler queues create grabit-files
