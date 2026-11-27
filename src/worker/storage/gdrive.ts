@@ -70,15 +70,33 @@ export class GoogleDrive implements StorageProvider {
   }
 
   /** 資料夾是否還在：只有確定被刪除（404／在垃圾桶）才算不在；網路或暫時性錯誤會往外丟，交給重試 */
-  private async alive(id: string): Promise<boolean> {
+  private rootChecked: string | null = null;
+
+  /**
+   * 檢查專屬資料夾還在不在，順便讀回它在 Google Drive 上的名稱。
+   * 使用者直接在 Google Drive 改了資料夾名稱時，GrabIt 這邊跟著更新（檔案用 ID 定位，不受影響）。
+   */
+  private async rootAlive(id: string): Promise<boolean> {
     const token = await accessToken(this.ctx.env, this.row);
-    const res = await fetch(`${DRIVE}/files/${id}?fields=trashed`, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch(`${DRIVE}/files/${id}?fields=trashed,name`, { headers: { Authorization: `Bearer ${token}` } });
     if (res.status === 404) return false;
     if (!res.ok) throw await httpError('Google Drive', res);
-    return !((await res.json()) as { trashed?: boolean }).trashed;
+    const f = (await res.json()) as { trashed?: boolean; name?: string };
+    if (f.trashed) return false;
+    if (f.name && f.name !== driveConfig(this.row).root_name) await this.syncRootName(id, f.name);
+    return true;
   }
 
-  private rootChecked: string | null = null;
+  /** 只改名稱欄位（單一 UPDATE，不會蓋掉同時進行的其他設定變更） */
+  private async syncRootName(id: string, name: string): Promise<void> {
+    await this.ctx.env.DB.prepare(
+      "UPDATE storages SET config = json_set(CASE WHEN json_valid(config) THEN config ELSE '{}' END, '$.root_name', ?), root_folder = ? WHERE id = ? AND json_extract(config, '$.root_id') = ?",
+    )
+      .bind(name, name, this.row.id, id)
+      .run();
+    this.row.config = JSON.stringify({ ...driveConfig(this.row), root_name: name });
+    this.row.root_folder = name;
+  }
 
   private async saveConfig(patch: Partial<DriveConfig>): Promise<DriveConfig> {
     const cfg = { ...driveConfig(this.row), ...patch };
@@ -95,7 +113,7 @@ export class GoogleDrive implements StorageProvider {
     const cfg = driveConfig(this.row);
     if (cfg.root_id && this.rootChecked === cfg.root_id) return cfg.root_id;
     if (cfg.root_id) {
-      if (await this.alive(cfg.root_id)) {
+      if (await this.rootAlive(cfg.root_id)) {
         this.rootChecked = cfg.root_id;
         return cfg.root_id;
       }
@@ -142,7 +160,7 @@ export class GoogleDrive implements StorageProvider {
   /** 專屬資料夾目前的狀態（給「雲端設定」顯示用，不會建立任何東西） */
   async rootStatus(): Promise<{ missing: boolean; extras: { id: string; name: string }[] }> {
     const cfg = driveConfig(this.row);
-    const missing = cfg.root_id ? !(await this.alive(cfg.root_id)) : false;
+    const missing = cfg.root_id ? !(await this.rootAlive(cfg.root_id)) : false;
     // GrabIt 只看得到自己建立的檔案（drive.file），所以這裡列出的都是 GrabIt 之前建立的最上層資料夾
     const query = `'root' in parents and mimeType='${FOLDER_MIME}' and trashed=false`;
     const r = await this.api<{ files: { id: string; name: string }[] }>(`${DRIVE}/files?${new URLSearchParams({ q: query, fields: 'files(id,name)', pageSize: '100' })}`);
@@ -181,7 +199,7 @@ export class GoogleDrive implements StorageProvider {
   async renameRoot(name: string): Promise<void> {
     const root = await this.rootId();
     await this.api(`${DRIVE}/files/${root}?fields=id`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
-    await this.saveConfig({ root_name: name });
+    await this.syncRootName(root, name);
   }
 
   /** 依設定把專屬資料夾分享給 GrabIt 成員、知道連結的任何人，或不分享 */

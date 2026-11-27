@@ -184,7 +184,7 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
       const f = files.get(m[1]!);
       if (!f) return json({ error: 'not found' }, 404);
       if (req.method === 'GET' && url.searchParams.get('alt') === 'media') return new Response(contents.get(f.id) ?? new ArrayBuffer(0));
-      if (req.method === 'GET') return json({ parents: f.parents, trashed: f.trashed, md5Checksum: f.md5 });
+      if (req.method === 'GET') return json({ id: f.id, name: f.name, parents: f.parents, trashed: f.trashed, md5Checksum: f.md5 });
       if (req.method === 'PATCH') {
         const body = (await req.json()) as { name?: string; trashed?: boolean };
         if (body.name) f.name = body.name;
@@ -215,6 +215,12 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   if (host === 'mock.test' && p === '/drive-perms') {
     return json(Object.fromEntries([...perms.entries()].map(([k, v]) => [k, v.filter((x) => x.role !== 'owner').map((x) => (x.type === 'anyone' ? 'anyone' : x.emailAddress))])));
   }
+  if (host === 'mock.test' && p === '/rename-roots') {
+    // 模擬使用者直接在 Google Drive 改專屬資料夾的名稱
+    const name = url.searchParams.get('name') ?? 'renamed';
+    for (const f of files.values()) if (f.folder && atRoot(f) && !f.trashed) f.name = name;
+    return json({ ok: true });
+  }
   if (host === 'mock.test' && p === '/trash-roots') {
     for (const f of files.values()) if (f.folder && atRoot(f)) f.trashed = true;
     return json({ ok: true });
@@ -240,6 +246,7 @@ export default {
     if (url.pathname === '/api/__drive') return mockFetch('https://mock.test/drive-tree');
     if (url.pathname === '/api/__drive/perms') return mockFetch('https://mock.test/drive-perms');
     if (url.pathname === '/api/__drive/trash-roots') return mockFetch('https://mock.test/trash-roots');
+    if (url.pathname === '/api/__drive/rename-roots') return mockFetch(`https://mock.test/rename-roots${url.search}`);
     return worker.fetch(req, withAi(env) as never, ctx);
   },
   queue: (batch: never, env: object) => worker.queue(batch, withAi(env) as never),

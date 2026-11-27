@@ -287,6 +287,11 @@ try {
   check('改成不分享', (await permsOf()).length === 0, JSON.stringify(await permsOf()));
   r = await patch('/api/storages/1', { root_folder: 'GrabIt 檔案' });
   check('專屬資料夾改名（檔案不用搬）', (await drive()).every((p) => p.startsWith('GrabIt 檔案/')), JSON.stringify(await drive()));
+  // 使用者直接在 Google Drive 改名：GrabIt 讀回新名稱（例如把「GrabIt (2)」改回「GrabIt」）
+  await fetch(BASE + '/api/__drive/rename-roots?name=' + encodeURIComponent('GrabIt'));
+  st = (await api('/api/storages')).body.items[0];
+  const afterRename = (await api('/api/storages')).body.items[0];
+  check('在 Google Drive 改專屬資料夾名稱後，GrabIt 跟著顯示新名稱', st.root_folder === 'GrabIt' && afterRename.root_folder === 'GrabIt', JSON.stringify([st.root_folder, afterRename.root_folder]));
 
   // 資料夾被刪掉：不會自動另開新資料夾，而是暫停並提示；使用者決定重建後再把舊檔整理進來
   check('雲端硬碟沒有多餘的 GrabIt 資料夾', st.extraFolders === 0, JSON.stringify(st));
