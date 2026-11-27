@@ -2,7 +2,7 @@
 
 只要建立一個 GrabIt LINE Bot，加入多個 LINE 群組，就能把各群組上傳的檔案自動下載、分類、歸檔到你指定的雲端空間，並在同一個管理介面（電腦、手機都能用的 PWA）搜尋、整理、追蹤。
 
-- **全部跑在 Cloudflare**：Workers（後端＋管理介面）、D1（資料庫＋全文搜尋）、Cron 排程（失敗重試）、Access（登入）；Queues 為選用。
+- **全部跑在 Cloudflare**：Workers（後端＋管理介面）、D1（資料庫＋全文搜尋）、Queues 與 Cron 排程（背景處理與失敗重試）；用 Google 帳號登入。
 - **互動展示版**：`npm run build:demo` 會產生 `web/dist-demo/grabit-demo.html`，在瀏覽器裡執行完整的後端邏輯（資料、雲端與 AI 為模擬），不用部署就能試用。
 
 ## 功能
@@ -47,12 +47,13 @@ Email 附件 ──Email Routing──▶ email()  ─┐                       
 管理介面上傳 ──▶ /api/upload ───────────┼──────────────▶ 歸檔流程 ◀─┘
                                         │   群組設定 → 檔名規則 → AI 判讀
                                         │   → 上傳雲端 → 去重 → 版本 → 標籤／專案 → 索引 → 通知／Webhook
-管理介面（PWA）──▶ /api/*（Cloudflare Access ＋ 角色權限）
+管理介面（PWA）──▶ /api/*（Google 登入 Session ＋ 角色與群組權限）
 ```
 
 ```
 src/worker/
-  index.ts        路由入口（webhook、API、OAuth、email、queue）
+  index.ts        路由入口（webhook、登入、API、OAuth、email、queue、排程）
+  auth/           Google 登入（OIDC）與 Session
   webhook.ts      LINE webhook
   ingest.ts       Email 附件、手動上傳
   processor.ts    歸檔流程與重試
@@ -73,104 +74,91 @@ migrations/       D1 資料表
 test/             單元測試與端對端測試
 ```
 
-## 部署
+## 部署（全部在網頁上操作）
 
-需要：Node.js 20+、Cloudflare 帳號、LINE 官方帳號，以及至少一種雲端空間。
+不需要在電腦上安裝任何東西，也不用開終端機。Cloudflare 會從 GitHub 讀取程式碼，自動打包與部署；之後 GitHub 有更新也會自動重新部署。**所有密鑰都在 Cloudflare 後台設定，不會寫進 GitHub。**
 
-### 1. Cloudflare 資源
+### 1. Cloudflare：資料庫、佇列與自動部署
 
-```bash
-npm install
-```
+1. [Cloudflare 後台](https://dash.cloudflare.com/) → **Storage & Databases → D1** → Create，名稱 `grabit`。把 Database ID 填進 GitHub 上的 `wrangler.toml`（網頁上按鉛筆圖示編輯）。
+2. **Storage & Databases → Queues** → Create，名稱 `grabit-files`。免費方案沒有 Queues：把 `wrangler.toml` 裡兩段 `[[queues...]]` 註解掉，系統會改成直接處理，失敗的檔案由每 5 分鐘的排程重試。
+3. **Workers & Pages → Create → Import a repository**，選這個 GitHub 專案：
+   - Worker 名稱：`grabit`
+   - Build command：`npm run build:web`
+   - Deploy command：`npm run deploy:cloudflare`（會自動建立／更新資料表再部署）
+4. 部署完成後記下網址，例如 `https://grabit.你的帳號.workers.dev`。
 
-```bash
-npx wrangler login
-```
+### 2. Google：登入與 Google Drive 共用一組 OAuth 用戶端
 
-```bash
-npx wrangler d1 create grabit
-```
+1. [Google Cloud Console](https://console.cloud.google.com/) 建立專案，「API 和服務」→「程式庫」啟用 **Google Drive API**。
+2. 「OAuth 同意畫面」：類型「外部」，範圍加入 `openid`、`email`、`profile`、`.../auth/drive.file`，發布狀態改成**正式版**（測試中狀態的授權 7 天就會失效）。
+3. 「憑證」→ 建立 OAuth 用戶端 ID（網頁應用程式），**已授權的重新導向 URI** 加入兩個：
+   - `https://你的網址/auth/google/callback`（登入 GrabIt）
+   - `https://你的網址/oauth/gdrive/callback`（授權存取 Google Drive）
+4. 複製用戶端 ID 與密鑰。
 
-把輸出的 `database_id` 貼到 `wrangler.toml`。
+登入只要求 email 與名稱；存取 Google Drive 是另外在「雲端設定」授權，而且只能存取 GrabIt 自己建立的檔案（`drive.file`）。
 
-（選用，需要 Workers Paid 方案）建立佇列後，取消 `wrangler.toml` 裡 queues 段落的註解。沒有佇列時，收到的檔案會直接處理，失敗的檔案由每 5 分鐘一次的排程自動重試。
+### 3. LINE
 
-```bash
-npx wrangler queues create grabit-files
-```
+1. [LINE Developers](https://developers.line.biz/) 建立 Provider → **Messaging API channel**，複製 **Channel secret**，在 Messaging API 分頁產生 **Channel access token**。
+2. [LINE Official Account Manager](https://manager.line.biz/) → 帳號設定：開啟**允許加入群組與多人聊天室**；回應設定關閉自動回應與歡迎訊息。
 
-```bash
-npm run db:migrate:remote
-```
+### 4. 在 Cloudflare 後台設定密鑰與變數
 
-### 2. LINE
+**Workers & Pages → grabit → Settings → Variables and Secrets → Add**：
 
-1. [LINE Developers](https://developers.line.biz/) 建立 Provider → **Messaging API channel**。
-2. 複製 **Channel secret**，在 Messaging API 頁面產生 **Channel access token（long-lived）**。
-3. [LINE Official Account Manager](https://manager.line.biz/) → 帳號設定：開啟**允許加入群組與多人聊天室**；關閉自動回應與歡迎訊息。
+| 名稱 | 類型 | 內容 |
+|---|---|---|
+| `GOOGLE_CLIENT_ID` | Secret | Google OAuth 用戶端 ID |
+| `GOOGLE_CLIENT_SECRET` | Secret | Google OAuth 用戶端密鑰 |
+| `LINE_CHANNEL_SECRET` | Secret | LINE Channel secret |
+| `LINE_CHANNEL_ACCESS_TOKEN` | Secret | LINE Channel access token |
+| `ADMIN_EMAILS` | Text | 管理員的 Google 帳號 email，多個用逗號分隔 |
+| `SESSION_TTL_DAYS`、`SESSION_IDLE_DAYS` | Text（選用） | 登入有效天數（預設 30）、閒置多久需重新登入（預設 7） |
+| `ANTHROPIC_API_KEY` | Secret（選用） | AI 文件判讀 |
+| `MS_CLIENT_ID`、`MS_CLIENT_SECRET`、`DROPBOX_APP_KEY`、`DROPBOX_APP_SECRET` | Secret（選用） | OneDrive、Dropbox |
 
-```bash
-npx wrangler secret put LINE_CHANNEL_SECRET
-```
+變數儲存後如果沒有自動生效，到 **Deployments** 對最新一筆按重新部署。
 
-```bash
-npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
-```
+### 5. 登入並完成設定
 
-### 3. 雲端空間（用哪個設定哪個）
+1. 打開網址 → **使用 Google 帳號登入**。只有 `ADMIN_EMAILS` 裡的帳號，以及管理員在「成員與權限」加入的帳號可以登入；其他人會看到「還不是 GrabIt 成員」。
+2. **雲端設定** → 新增 Google Drive → 授權。
+3. **系統設定** → 複製 Webhook URL → 貼到 LINE Developers 的 Webhook URL，按 Verify，開啟 Use webhook。
+4. 把 Bot 邀請進群組 →「群組設定」完成每個群組的設定。
+5. 手機上「加入主畫面」安裝成 App。
 
-部署後在管理介面「雲端設定」新增空間並授權。各家需要先建立 OAuth 應用程式，重新導向網址是 `https://<你的網域>/oauth/<類型>/callback`（「系統設定」頁可以直接複製）。
+### 登入與安全
+
+- Google OAuth 2.0 授權碼流程＋PKCE；驗證 ID Token 的簽章（Google 公鑰）、issuer、audience、有效期限、nonce、`email_verified`；state 同時存在 D1 與 Cookie，只能使用一次，10 分鐘內有效。
+- Session 存在 D1（只存 token 的 SHA-256），Cookie 為 `__Host-` 前綴、`HttpOnly`、`Secure`、`SameSite=Lax`，有絕對期限與閒置逾時。
+- 會修改資料的請求必須同源（CSRF 防護）；登入後只會導回站內頁面。
+- 可以自己「登出其他裝置／所有裝置」；管理員可以強制登出成員；移除成員會立即撤銷他所有的登入。
+- LINE `/webhook` 不需要登入，改用 LINE 簽章驗證。
+
+### 雲端空間（選用）
+
+部署後在「雲端設定」新增。各家需要先建立 OAuth 應用程式，重新導向網址是 `https://你的網址/oauth/<類型>/callback`（「系統設定」頁可以直接複製）。
 
 | 空間 | 建立應用程式 | 權限 | Secrets |
 |---|---|---|---|
-| Google Drive | [Google Cloud Console](https://console.cloud.google.com/)：啟用 Drive API，建立「網頁應用程式」OAuth 用戶端；同意畫面發布為「正式版」（`drive.file` 不需審查，測試中狀態的授權 7 天會失效） | `drive.file`（只能存取本系統建立的檔案） | `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` |
-| OneDrive／SharePoint | [Microsoft Entra 應用程式註冊](https://entra.microsoft.com/)：平台選 Web，支援的帳戶類型依需求選擇 | `Files.ReadWrite`、`offline_access`、`User.Read` | `MS_CLIENT_ID`、`MS_CLIENT_SECRET` |
-| Dropbox | [Dropbox App Console](https://www.dropbox.com/developers/apps)：Scoped access，權限勾選 `files.content.write`、`files.content.read`、`account_info.read` | 同左 | `DROPBOX_APP_KEY`、`DROPBOX_APP_SECRET` |
-| NAS（WebDAV） | Synology：套件中心安裝 WebDAV Server 並開啟 HTTPS；QNAP、Nextcloud 也支援 | 建議建立只能寫入指定資料夾的專用帳號 | 在介面輸入網址、帳號、密碼 |
+| Google Drive | 與登入共用第 2 步的用戶端 | `drive.file` | `GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` |
+| OneDrive／SharePoint | [Microsoft Entra 應用程式註冊](https://entra.microsoft.com/)，平台選 Web | `Files.ReadWrite`、`offline_access`、`User.Read` | `MS_CLIENT_ID`、`MS_CLIENT_SECRET` |
+| Dropbox | [Dropbox App Console](https://www.dropbox.com/developers/apps)，Scoped access，勾選 `files.content.write`、`files.content.read`、`account_info.read` | 同左 | `DROPBOX_APP_KEY`、`DROPBOX_APP_SECRET` |
+| NAS（WebDAV） | Synology／QNAP／Nextcloud 開啟 WebDAV（HTTPS） | 建議專用帳號 | 在介面輸入 |
 
-iCloud Drive 沒有伺服器可用的上傳 API，因此不支援直接串接。
+iCloud Drive 沒有伺服器可用的上傳 API，因此不支援。
 
-```bash
-npx wrangler secret put GOOGLE_CLIENT_ID
-```
+### AI（選用）
 
-（其他 secrets 依同樣方式設定。）
-
-### 4. AI（選用）
-
-```bash
-npx wrangler secret put ANTHROPIC_API_KEY
-```
-
-預設模型是 `claude-opus-5-5`（`wrangler.toml` 的 `AI_MODEL` 可以改）。AI 判讀會讀取 10MB 以內的檔案內容，每個檔案呼叫一次 API；可以在「系統設定」整體關閉，或在「群組設定」對個別群組關閉。呼叫時已開啟伺服器端的 refusal fallback（`fallbacks: "default"`）。
-
-語意搜尋另外需要 Workers AI 與 Vectorize，見 `wrangler.toml` 最下方的說明。
-
-### 5. 部署與登入保護
-
-```bash
-npm run deploy
-```
-
-用 **Cloudflare Access** 保護管理介面（沒有設定時 `/api` 一律回 503）：
-
-1. Zero Trust → Access → Applications → 新增 Self-hosted，Domain 填 Worker 網址，Policy 允許你與成員的 email。
-2. 再新增一個 Application：同網域、Path 填 `webhook`、動作 **Bypass**（LINE 要能直接呼叫，安全性由簽章驗證負責）。
-3. 把 team domain 與 Application Audience (AUD) Tag 填進 `wrangler.toml` 的 `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`，重新部署。
-4. 第一位登入的人（或 `ADMIN_EMAILS` 名單上的人）自動成為管理員；其他成員到「成員與權限」加入。
-
-### 6. 開始使用
-
-1. 「雲端設定」新增並授權空間。
-2. 「系統設定」複製 Webhook URL，貼到 LINE Developers → Webhook URL，開啟 Use webhook。
-3. 把 Bot 邀請進群組 →「群組設定」完成每個群組的設定。
-4. 建立分類規則、專案；手機上「加入主畫面」安裝成 App。
+設定 `ANTHROPIC_API_KEY` 後啟用。預設模型 `claude-opus-5-5`（`wrangler.toml` 的 `AI_MODEL`），依用量計費；可以在「系統設定」整體關閉，或在「群組設定」對個別群組關閉。語意搜尋另外需要 Workers AI 與 Vectorize（見 `wrangler.toml` 最下方）。
 
 ### Email 收件（選用）
 
-Cloudflare 後台 → 你的網域 → Email Routing → 建立一個地址（例如 `files@你的網域`），動作選「Send to a Worker」並選 `grabit`。再到「系統設定」填允許的寄件者。
+網域在 Cloudflare 上時：後台 → 網域 → Email Routing → 建立地址（例如 `files@你的網域`），動作選「Send to a Worker」→ `grabit`。再到「系統設定」填允許的寄件者。
 
-## 開發與測試
+## 開發與測試（給開發者，一般部署不需要）
 
 ```bash
 cp .dev.vars.example .dev.vars
@@ -196,8 +184,9 @@ npm run test:e2e
 npm run build:demo
 ```
 
-- `npm test`：規則引擎、版本辨識、規則學習、文字擷取、群組檔案類型、Dropbox 標頭等單元測試。
-- `npm run test:e2e`：本機啟動 `wrangler dev`（真的 D1、Queue），LINE 與 Google Drive 換成假服務，從 webhook 驗證到歸檔、群組設定、規則學習、復原、重新套用、重複檔、資料夾改名、版本、搜尋、上傳與權限。
+- `npm test`：規則引擎、版本辨識、規則學習、文字擷取、群組檔案類型、Dropbox 標頭、登入導向／CSRF／PKCE 等單元測試。
+- 本機開發可以在 `.dev.vars` 設 `DEV_NO_AUTH=true` 略過登入；這個設定只在 `localhost` 有效，誤設在正式環境也不會生效。
+- `npm run test:e2e`：本機啟動 `wrangler dev`（真的 D1、Queue），LINE、Google 登入與 Google Drive 換成假服務（Google ID Token 用測試金鑰實際簽章），驗證登入流程與各種攻擊情境（偽造 state、重放、nonce／audience／issuer／簽章錯誤、過期、未驗證 email、非成員、CSRF、open redirect）、Session 撤銷，以及歸檔、群組設定、規則學習、復原、版本、搜尋、上傳與權限。`E2E_NO_QUEUE=1` 測試沒有 Queues 的模式。
 - OneDrive、Dropbox、WebDAV 與 Claude API 依官方文件實作，但沒有在測試中連線到真實服務，第一次使用時請先用少量檔案確認。
 
 ## 費用與限制

@@ -24,7 +24,7 @@ export function Users() {
       <div className="page-head">
         <div>
           <h1>成員與權限</h1>
-          <p>用 email 登入（Cloudflare Access），依角色與群組決定能看到哪些檔案</p>
+          <p>成員用自己的 Google 帳號登入；只有這裡列出的 email（與 ADMIN_EMAILS）可以登入</p>
         </div>
         <button className="btn sm primary" onClick={() => setEdit({ isNew: true, email: '', role: 'viewer', all_groups: 0, groups: [] })}>
           <Icon name="plus" />
@@ -48,7 +48,8 @@ export function Users() {
                   <div className="meta">
                     <span className={`badge ${u.role === 'admin' ? 'info' : 'muted'}`}>{ROLE[u.role][0]}</span>{' '}
                     {u.role === 'admin' || u.all_groups ? '所有群組' : u.groups.length ? u.groups.map(groupName).join('、') : '尚未授權任何群組'}
-                    {u.last_seen ? ` · 最近登入 ${formatTime(u.last_seen)}` : ' · 尚未登入'}
+                    {u.last_seen ? ` · 最近使用 ${formatTime(u.last_seen)}` : ' · 尚未登入'}
+                    {u.active_sessions ? ` · ${u.active_sessions} 個裝置登入中` : ''}
                   </div>
                 </div>
                 <button className="btn sm" onClick={() => setEdit(u)}>
@@ -60,7 +61,7 @@ export function Users() {
         )}
       </div>
       <p className="muted small" style={{ marginTop: 12 }}>
-        新成員也要加到 Cloudflare Access 的允許名單，才能通過登入頁。
+        請填成員登入用的 Google 帳號 email（Gmail 或公司的 Google Workspace 信箱）。移除成員會立即登出他所有的裝置。
       </p>
       {edit && (
         <UserSheet
@@ -91,8 +92,18 @@ function UserSheet({ user, groups, self, onClose, onSaved }: { user: Partial<Use
       toast((e as Error).message, 'error');
     }
   };
+  const revoke = async () => {
+    if (!(await ask(`強制登出 ${u.email} 的所有裝置？他需要重新用 Google 帳號登入。`, '強制登出'))) return;
+    try {
+      const r = await api<{ revoked: number }>(`/users/${encodeURIComponent(u.email)}/revoke-sessions`, { method: 'POST', json: {} });
+      toast(`已登出 ${r.revoked} 個裝置`);
+      onSaved();
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
+  };
   const remove = async () => {
-    if (!(await ask(`移除成員 ${u.email}？`))) return;
+    if (!(await ask(`移除成員 ${u.email}？他所有的裝置會立即登出。`))) return;
     try {
       await api(`/users/${encodeURIComponent(u.email)}`, { method: 'DELETE' });
       onSaved();
@@ -108,9 +119,14 @@ function UserSheet({ user, groups, self, onClose, onSaved }: { user: Partial<Use
       actions={
         <>
           {!user.isNew && u.email !== self && (
-            <button className="btn danger" style={{ marginRight: 'auto' }} onClick={remove}>
-              移除
-            </button>
+            <>
+              <button className="btn danger" style={{ marginRight: 'auto' }} onClick={remove}>
+                移除
+              </button>
+              <button className="btn" onClick={revoke}>
+                強制登出
+              </button>
+            </>
           )}
           <button className="btn" onClick={onClose}>
             取消

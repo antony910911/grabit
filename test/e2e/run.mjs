@@ -2,7 +2,7 @@
 // 啟動 wrangler dev（真的 D1、Queue），把 LINE 與 Google Drive 換成假服務，從 webhook 一路驗證到歸檔與管理功能。
 import { spawn, execSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,7 +10,17 @@ const SECRET = 'e2e-secret';
 const PORT = Number(process.env.E2E_PORT ?? 8799);
 const BASE = `http://127.0.0.1:${PORT}`;
 const persist = mkdtempSync(join(tmpdir(), 'grabit-e2e-'));
-const cfg = process.env.E2E_CONFIG ?? 'test/e2e/wrangler.e2e.toml';
+// 測試設定直接由 wrangler.toml 產生，避免兩邊不同步；E2E_NO_QUEUE=1 測試沒有 Queues（免費方案）的模式
+const cfg = 'test/e2e/.wrangler.e2e.toml';
+{
+  let toml = readFileSync('wrangler.toml', 'utf8')
+    .replace(/^main = .*$/m, 'main = "mock-worker.ts"')
+    .replace('directory = "./web/dist"', 'directory = "../../web/dist"')
+    .replace('migrations_dir = "migrations"', 'migrations_dir = "../../migrations"')
+    .replace('max_batch_timeout = 5', 'max_batch_timeout = 1');
+  if (process.env.E2E_NO_QUEUE) toml = toml.replace(/\[\[queues\.(producers|consumers)\]\][\s\S]*?(?=\n\n|\n#|$)/g, '');
+  writeFileSync(cfg, toml);
+}
 const sh = (cmd) => execSync(cmd, { stdio: 'pipe' }).toString();
 
 let failed = 0;
@@ -26,7 +36,7 @@ sh(
 
 const dev = spawn(
   'npx',
-  ['wrangler', 'dev', '--test-scheduled', '-c', cfg, '--port', String(PORT), '--persist-to', persist, '--var', `LINE_CHANNEL_SECRET:${SECRET}`, '--var', 'LINE_CHANNEL_ACCESS_TOKEN:x', '--var', 'GOOGLE_CLIENT_ID:x', '--var', 'GOOGLE_CLIENT_SECRET:x', '--var', 'DEV_NO_AUTH:true'],
+  ['wrangler', 'dev', '--test-scheduled', '-c', cfg, '--port', String(PORT), '--persist-to', persist, '--var', `LINE_CHANNEL_SECRET:${SECRET}`, '--var', 'LINE_CHANNEL_ACCESS_TOKEN:x', '--var', 'GOOGLE_CLIENT_ID:x', '--var', 'GOOGLE_CLIENT_SECRET:x', '--var', 'ADMIN_EMAILS:Admin@Example.com'],
   { stdio: ['ignore', 'pipe', 'pipe'], detached: true },
 );
 let logs = '';
@@ -34,10 +44,29 @@ dev.stdout.on('data', (d) => (logs += d));
 dev.stderr.on('data', (d) => (logs += d));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 目前登入者的 Session Cookie（測試裡手動管理）
+let COOKIE = '';
 const api = async (path, init = {}) => {
-  const res = await fetch(BASE + path, { ...init, headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) } });
+  const res = await fetch(BASE + path, { ...init, headers: { 'Content-Type': 'application/json', Cookie: COOKIE, ...(init.headers ?? {}) } });
   return { status: res.status, body: await res.json().catch(() => null) };
 };
+const cookieOf = (res, name) => (res.headers.getSetCookie?.() ?? []).find((c) => c.startsWith(`${name}=`)) ?? '';
+const pair = (setCookie) => setCookie.split(';')[0];
+
+/** 走完整的 Google 登入流程（Google 端由 mock-worker 模擬）；opts 可以製造各種異常 */
+async function login(email, opts = {}) {
+  const start = await fetch(`${BASE}/auth/google/start?next=${encodeURIComponent(opts.next ?? '/files')}`, { redirect: 'manual' });
+  const loc = new URL(start.headers.get("location"));
+  const stateCookie = cookieOf(start, '__Host-grabit_login_state');
+  const state = loc.searchParams.get('state');
+  const nonce = loc.searchParams.get('nonce');
+  const code = ['login', email, opts.nonce ?? nonce, String(opts.verified ?? true), opts.aud ?? '', opts.iss ?? '', opts.signer ?? '', opts.expired ? '1' : ''].join('|');
+  const cb = await fetch(`${BASE}/auth/google/callback?state=${encodeURIComponent(opts.state ?? state)}&code=${encodeURIComponent(code)}`, {
+    redirect: 'manual',
+    headers: { Cookie: opts.noStateCookie ? '' : pair(stateCookie) },
+  });
+  return { start, loc, stateCookie, state, code, status: cb.status, location: cb.headers.get('location'), session: cookieOf(cb, '__Host-grabit_session') };
+}
 const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
 const patch = (path, body) => api(path, { method: 'PATCH', body: JSON.stringify(body) });
 const webhook = async (events, secret = SECRET) => {
@@ -66,15 +95,54 @@ const waitIdle = async (n) => {
 try {
   for (let i = 0; i < 60; i++) {
     try {
-      if ((await fetch(BASE + '/api/me')).ok) break;
+      if ((await fetch(BASE + '/api/me')).status === 401) break;
     } catch {}
     await sleep(500);
   }
 
+  // ---------- Google 登入 ----------
+  check('未登入時管理 API 回 401', (await api('/api/me')).status === 401);
+  check('未登入時雲端授權路徑被擋下', (await fetch(`${BASE}/oauth/gdrive/start?storage=1`, { redirect: 'manual' })).status === 401);
+  check('未登入時上傳被擋下', (await fetch(`${BASE}/api/upload`, { method: 'POST', body: new FormData() })).status === 401);
+
+  let L = await login('admin@example.com');
+  check('導向 Google：PKCE、nonce、state、只要求基本資料', L.loc.origin === 'https://accounts.google.com' && L.loc.searchParams.get('code_challenge_method') === 'S256' && !!L.loc.searchParams.get('nonce') && L.loc.searchParams.get('scope') === 'openid email profile' && L.loc.searchParams.get('redirect_uri') === `${BASE.replace('127.0.0.1', '127.0.0.1')}/auth/google/callback`, L.loc.toString());
+  check('state Cookie 是 HttpOnly／Secure／SameSite', /HttpOnly/i.test(L.stateCookie) && /Secure/i.test(L.stateCookie) && /SameSite=Lax/i.test(L.stateCookie), L.stateCookie);
+  check('管理員（ADMIN_EMAILS，大小寫不同）登入成功並導回原頁', L.status === 302 && L.location === '/files' && !!L.session, JSON.stringify({ status: L.status, location: L.location }));
+  check('Session Cookie 是 __Host-、HttpOnly、Secure、SameSite、有期限', /^__Host-grabit_session=/.test(L.session) && /HttpOnly/i.test(L.session) && /Secure/i.test(L.session) && /SameSite=Lax/i.test(L.session) && /Max-Age=\d+/i.test(L.session) && /Path=\//.test(L.session), L.session);
+  COOKIE = pair(L.session);
+  const me = (await api('/api/me')).body;
+  check('登入後取得身分與角色', me?.email === 'admin@example.com' && me.role === 'admin', JSON.stringify(me));
+
+  const err = (r) => new URL(r.location ?? '/', BASE).searchParams.get('error');
+  let R = await login('admin@example.com', { state: 'forged-state' });
+  check('state 不符被拒絕（CSRF）', err(R) === 'state' && !R.session, JSON.stringify(R.location));
+  R = await login('admin@example.com', { noStateCookie: true });
+  check('缺少 state Cookie 被拒絕', err(R) === 'state' && !R.session);
+  R = await login('admin@example.com');
+  const replay = await fetch(`${BASE}/auth/google/callback?state=${encodeURIComponent(R.state)}&code=${encodeURIComponent(R.code)}`, { redirect: 'manual', headers: { Cookie: pair(R.stateCookie) } });
+  check('同一個 state 不能重複使用', err({ location: replay.headers.get('location') }) === 'state' && !cookieOf(replay, '__Host-grabit_session'));
+  R = await login('admin@example.com', { nonce: 'wrong-nonce' });
+  check('nonce 不符被拒絕', err(R) === 'verify' && !R.session);
+  R = await login('admin@example.com', { aud: 'someone-elses-client' });
+  check('audience 不符被拒絕', err(R) === 'verify' && !R.session);
+  R = await login('admin@example.com', { iss: 'https://evil.example.com' });
+  check('issuer 不符被拒絕', err(R) === 'verify' && !R.session);
+  R = await login('admin@example.com', { signer: 'attacker' });
+  check('簽章不是 Google 金鑰被拒絕', err(R) === 'verify' && !R.session);
+  R = await login('admin@example.com', { expired: true });
+  check('過期的 ID Token 被拒絕', err(R) === 'verify' && !R.session);
+  R = await login('admin@example.com', { verified: false });
+  check('email 未驗證被拒絕', err(R) === 'unverified' && !R.session);
+  R = await login('stranger@example.com');
+  check('不是成員的帳號不能登入（不會自動成為管理員）', err(R) === 'not_member' && !R.session);
+  R = await login('admin@example.com', { next: '//evil.example.com/phish' });
+  check('登入後不會被導向外部網站', R.location === '/', R.location);
+  check('跨站請求被擋下（CSRF）', (await api('/api/projects', { method: 'POST', body: '{"name":"x"}', headers: { Origin: 'https://evil.example.com' } })).status === 403);
+  check('偽造的 Session Cookie 無效', (await api('/api/me', { headers: { Cookie: '__Host-grabit_session=forged' } })).status === 401);
+
   check('錯誤簽章被拒絕', (await webhook([], 'wrong')).status === 401);
   check('空的驗證請求回 200', (await webhook([])).status === 200);
-  const me = (await api('/api/me')).body;
-  check('第一位登入者自動成為管理員', me?.role === 'admin', JSON.stringify(me));
 
   let r = await post('/api/projects', { name: 'Farnesene' });
   const farnesene = r.body.id;
@@ -185,7 +253,7 @@ try {
   // 手動上傳
   const fd = new FormData();
   fd.append('file', new Blob(['hello upload'], { type: 'text/plain' }), '手動上傳_HPLC數據.txt');
-  const up = await fetch(`${BASE}/api/upload`, { method: 'POST', body: fd });
+  const up = await fetch(`${BASE}/api/upload`, { method: 'POST', body: fd, headers: { Cookie: COOKIE } });
   const upBody = await up.json();
   check('手動上傳走同一套規則', upBody.status === 'done' && upBody.folder === 'Farnesene/分析數據/2026', JSON.stringify(upBody));
 
@@ -199,6 +267,30 @@ try {
   check('失敗檔案可以重試', r.status === 200);
   r = await api('/api/operations');
   check('操作紀錄', r.body.items.length >= 3);
+
+  // ---------- 成員登入、權限、登出與撤銷 ----------
+  const adminCookie = COOKIE;
+  await post('/api/users', { email: 'Editor@Example.com', role: 'editor', groups: ['Cgroup1'] });
+  const V = await login('viewer@example.com');
+  check('被加入的成員可以登入', !!V.session, JSON.stringify(V.location));
+  COOKIE = pair(V.session);
+  check('檢視者不能修改', (await post('/api/projects', { name: '不該建立' })).status === 403);
+  check('檢視者看不到未授權群組的檔案', (await api('/api/files')).body.items.length === 0);
+  check('檢視者不能進入成員管理', (await api('/api/users')).status === 403);
+  const E = await login('editor@example.com');
+  COOKIE = pair(E.session);
+  check('編輯者只看得到被授權的群組', (await api('/api/files')).body.items.every((f) => f.group_id === 'Cgroup1') && (await api('/api/files')).body.items.length > 0);
+  COOKIE = adminCookie;
+  r = await post('/api/users/viewer%40example.com/revoke-sessions', {});
+  check('管理員強制登出成員', r.body?.revoked === 1, JSON.stringify(r.body));
+  check('被強制登出後 Session 失效', (await api('/api/me', { headers: { Cookie: pair(V.session) } })).status === 401);
+  await api('/api/users/editor%40example.com', { method: 'DELETE' });
+  check('移除成員後立即失效', (await api('/api/me', { headers: { Cookie: pair(E.session) } })).status === 401);
+  check('移除後無法再登入', err(await login('editor@example.com')) === 'not_member');
+  const out = await fetch(`${BASE}/auth/logout`, { method: 'POST', headers: { Cookie: COOKIE } });
+  check('登出會清除 Cookie', out.ok && /Max-Age=0|Expires=Thu, 01 Jan 1970/i.test(cookieOf(out, '__Host-grabit_session')), cookieOf(out, '__Host-grabit_session'));
+  check('登出後 Session 失效', (await api('/api/me')).status === 401);
+  check('LINE webhook 不受登入影響', (await webhook([])).status === 200);
 
   const sched = await fetch(BASE + '/__scheduled?cron=*/5+*+*+*+*');
   check('排程重試可以執行', sched.ok, String(sched.status));

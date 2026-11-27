@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Me } from './api';
+import { api, ApiError, logout, type Me } from './api';
 import { Brand, Icon, Sheet } from './components';
 import { ConfirmHost, Link, MeCtx, navigate, usePath, useToast } from './lib';
 import { Dashboard } from './pages/Dashboard';
@@ -13,6 +13,7 @@ import { Ask } from './pages/Ask';
 import { Labels } from './pages/Labels';
 import { Storages } from './pages/Storages';
 import { Users } from './pages/Users';
+import { Login } from './pages/Login';
 
 interface NavItem {
   to: string;
@@ -58,6 +59,41 @@ declare global {
   }
 }
 
+function Account({ me }: { me: Me | null }) {
+  const [sessions, setSessions] = useState<{ id: string; last_seen: string; user_agent: string | null; current: boolean }[] | null>(null);
+  useEffect(() => {
+    if (!me?.demo) api<{ items: { id: string; last_seen: string; user_agent: string | null; current: boolean }[] }>('/me/sessions').then((r) => setSessions(r.items)).catch(() => {});
+  }, [me]);
+  const toast = useToast();
+  const others = async () => {
+    const r = await api<{ revoked: number }>('/me/logout-others', { method: 'POST', json: {} });
+    toast(`已登出其他 ${r.revoked} 個裝置`);
+    setSessions((s) => s?.filter((x) => x.current) ?? null);
+  };
+  return (
+    <div className="card card-pad" style={{ marginTop: 14 }}>
+      <h2>帳號</h2>
+      <p className="muted small" style={{ margin: '4px 0 12px' }}>
+        {me?.name ? `${me.name}（${me.email}）` : me?.email}・{{ admin: '管理員', editor: '編輯者', viewer: '檢視者' }[me?.role ?? 'viewer']}
+        {sessions ? `・${sessions.length} 個裝置登入中` : ''}
+      </p>
+      <div className="row">
+        <button className="btn" onClick={() => logout()}>
+          登出
+        </button>
+        {sessions && sessions.length > 1 && (
+          <button className="btn" onClick={others}>
+            登出其他裝置
+          </button>
+        )}
+        <button className="btn danger" onClick={() => logout(true)}>
+          登出所有裝置
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function More({ me }: { me: Me | null }) {
   return (
     <>
@@ -75,6 +111,7 @@ function More({ me }: { me: Me | null }) {
           </Link>
         ))}
       </div>
+      {!me?.demo && <Account me={me} />}
     </>
   );
 }
@@ -156,12 +193,18 @@ export function App() {
   useEffect(() => window.__grabitDemo?.onReply((text) => toast(`LINE Bot 在群組回覆：${text.replace(/\n/g, ' ')}`)) as (() => void) | undefined, [toast]);
   const [me, setMe] = useState<Me | null>(null);
   const [meError, setMeError] = useState<string | null>(null);
+  const [needLogin, setNeedLogin] = useState<string | null | false>(false);
   const [simulate, setSimulate] = useState(false);
   useEffect(() => {
     api<Me>('/me')
       .then(setMe)
-      .catch((e: Error) => setMeError(e.message));
+      .catch((e: Error) => (e instanceof ApiError && e.status === 401 ? setNeedLogin(null) : setMeError(e.message)));
+    const onLogin = (e: Event) => setNeedLogin((e as CustomEvent<string>).detail);
+    window.addEventListener('grabit-login-required', onLogin);
+    return () => window.removeEventListener('grabit-login-required', onLogin);
   }, []);
+
+  if (needLogin !== false || (path === '/login' && !me)) return <Login message={needLogin || null} />;
 
   const active = (to: string) => (to === '/' ? path === '/' : path.startsWith(to));
   let page;
@@ -206,6 +249,13 @@ export function App() {
               {me.name ?? me.email}
               <br />
               {{ admin: '管理員', editor: '編輯者', viewer: '檢視者' }[me.role]}
+              {!me.demo && (
+                <div>
+                  <button className="btn sm ghost" style={{ padding: 0 }} onClick={() => logout()}>
+                    登出
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </nav>

@@ -12,6 +12,8 @@ import { buildAuthUrl, exchangeCode, OAUTH } from './storage/oauth';
 import { FolderCache } from './storage/cache';
 import { STORAGE_LABEL, type StorageRow, type StorageType } from './storage';
 import { log } from './db';
+import { finishLogin, startLogin } from './auth/google';
+import { clearSessionCookie, readSession, revokeSession, sameOrigin } from './auth/session';
 
 export const app = new Hono<AppEnv>();
 
@@ -24,6 +26,22 @@ app.onError((err, c) => {
 // LINE webhook（不經過登入驗證，改用 LINE 簽章驗證）
 app.post('/webhook', (c) => handleWebhook(c.req.raw, c.env, c.executionCtx));
 
+// Google 帳號登入（不需要已登入）
+app.get('/auth/google/start', (c) => startLogin(c));
+app.get('/auth/google/callback', (c) => finishLogin(c));
+app.post('/auth/logout', async (c) => {
+  if (!sameOrigin(c.req.raw)) return c.json({ error: '請求來源不正確（CSRF 防護）' }, 403);
+  const session = await readSession(c);
+  if (session) {
+    await revokeSession(c.env, session.id);
+    await log(c.env, 'info', 'login', `${session.email} 登出`);
+  }
+  clearSessionCookie(c);
+  return c.json({ ok: true });
+});
+app.all('/auth/*', (c) => c.json({ error: 'Not found' }, 404));
+
+// 管理 API 與雲端空間授權都需要登入
 app.use('/api/*', requireAuth);
 app.use('/oauth/*', requireAuth);
 app.route('/api', files);

@@ -4,3 +4,4 @@ web/dist/
 .dev.vars
 *.log
 web/dist-demo/
+test/e2e/.wrangler.e2e.toml

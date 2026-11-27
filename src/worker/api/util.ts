@@ -4,7 +4,7 @@ import type { CurrentUser, Role } from '../permissions';
 import { atLeast } from '../permissions';
 import { sanitizeSegment } from '../rules';
 
-export type AppEnv = { Bindings: Env; Variables: { user: CurrentUser } };
+export type AppEnv = { Bindings: Env; Variables: { user: CurrentUser; sessionId: string | null } };
 export type Ctx = Context<AppEnv>;
 
 export class HttpError extends Error {
