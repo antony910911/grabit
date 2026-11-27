@@ -12,8 +12,8 @@ TIMEZONE = "Asia/Taipei"
 #   Text  ：ADMIN_EMAILS（可以登入的管理員 Google 帳號，逗號分隔；不在名單也沒被加入成員的人無法登入）
 #           SESSION_TTL_DAYS（登入有效天數，預設 30）、SESSION_IDLE_DAYS（閒置多久要重新登入，預設 7）
 #   Secret：LINE_CHANNEL_SECRET、LINE_CHANNEL_ACCESS_TOKEN、GOOGLE_CLIENT_ID、GOOGLE_CLIENT_SECRET
-#           （選用）ANTHROPIC_API_KEY、MS_CLIENT_ID、MS_CLIENT_SECRET、DROPBOX_APP_KEY、DROPBOX_APP_SECRET
-# AI 模型（需要 ANTHROPIC_API_KEY）
+#           （選用）GEMINI_API_KEY（Gemini 免費版）、ANTHROPIC_API_KEY（Claude，付費）、MS_CLIENT_ID、MS_CLIENT_SECRET、DROPBOX_APP_KEY、DROPBOX_APP_SECRET
+# Claude 的模型（只有選用 Claude 時才用到，需要 ANTHROPIC_API_KEY）
 AI_MODEL = "claude-opus-5-5"
 
 [assets]
@@ -51,10 +51,14 @@ max_concurrency = 1
 [observability]
 enabled = true
 
-# ---------- 選用：語意搜尋（Workers AI + Vectorize） ----------
+# ---------- Workers AI：免費 AI 文件判讀（預設引擎） ----------
+# 免費方案每天 10,000 Neurons。GrabIt 會在「系統設定 → AI 文件判讀」的每日上限與預算內停下來，
+# 額度用完就暫停到隔天（UTC 午夜），不會改用付費模型。不想用 AI 可以在系統設定選「不使用 AI」。
+[ai]
+binding = "AI"
+
+# ---------- 選用：語意搜尋（另外需要 Vectorize） ----------
 # npx wrangler vectorize create grabit-files --dimensions=1024 --metric=cosine
-# [ai]
-# binding = "AI"
 # [[vectorize]]
 # binding = "VECTORIZE"
 # index_name = "grabit-files"

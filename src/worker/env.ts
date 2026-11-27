@@ -2,14 +2,16 @@ import type { AiEngine } from './ai';
 
 export interface FileJob {
   fileId: number;
+  /** 'ai'：歸檔完成後的 AI 判讀工作；沒有時是歸檔工作 */
+  task?: 'ai';
 }
 
 export interface Env {
   DB: D1Database;
   ASSETS?: Fetcher;
   FILE_QUEUE?: Queue<FileJob>;
-  // 語意搜尋（選用）：Workers AI + Vectorize
-  AI?: { run(model: string, input: unknown): Promise<unknown> };
+  // Workers AI：免費 AI 文件判讀（預設引擎），也用於選用的語意搜尋（搭配 Vectorize）
+  AI?: { run(model: string, input: unknown): Promise<unknown>; toMarkdown?(files: { name: string; blob: Blob }[]): Promise<unknown> };
   VECTORIZE?: VectorizeIndex;
 
   LINE_CHANNEL_SECRET: string;
@@ -21,6 +23,8 @@ export interface Env {
   DROPBOX_APP_KEY?: string;
   DROPBOX_APP_SECRET?: string;
   ANTHROPIC_API_KEY?: string;
+  /** Gemini API 免費版的金鑰（選用；Google AI Studio 建立，專案不要開 Billing） */
+  GEMINI_API_KEY?: string;
   AI_MODEL?: string;
 
   TIMEZONE?: string;

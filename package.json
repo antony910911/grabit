@@ -47,6 +47,9 @@
       },
       "FILE_QUEUE": {
         "description": "背景處理檔案用的佇列。保持預設名稱就好，免費方案也可以用。"
+      },
+      "AI": {
+        "description": "免費的 AI 文件判讀（Cloudflare Workers AI，每天 10,000 Neurons 免費）。GrabIt 會在免費額度內停下來，不會自動計費。"
       }
     }
   }

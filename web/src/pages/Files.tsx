@@ -8,6 +8,7 @@ const TABS = [
   { key: 'all', label: '全部' },
   { key: 'unsorted', label: '待分類', count: 'unsorted' },
   { key: 'sorted', label: '已歸檔' },
+  { key: 'ai_review', label: 'AI 待確認', count: 'aiReview' },
   { key: 'ai', label: 'AI 歸檔', count: 'byAi' },
   { key: 'pending', label: '處理中', count: 'pending' },
   { key: 'failed', label: '失敗', count: 'failed' },

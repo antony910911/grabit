@@ -173,7 +173,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 40px 0; }
   <p class="lead">GrabIt 是一個 LINE Bot：把它拉進群組，大家傳的檔案、照片就會<b>自動存進你的 Google 雲端硬碟</b>，依檔名分到不同資料夾，還有一個手機、電腦都能用的管理網站。照著這份教學做，你會有一份<b>完全用你自己帳號</b>的 GrabIt。<b>不用會寫程式，也不用開終端機。</b></p>
   <ul class="facts">
     <li>⏱ 大約 1 小時</li>
-    <li>💰 全部免費</li>
+    <li>💰 全部免費（含 AI 分類）</li>
     <li>💻 請用電腦設定</li>
     <li>🔒 檔案只在你的雲端硬碟</li>
   </ul>
@@ -220,7 +220,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 40px 0; }
     <li><a href="#s8">8. 第一次登入、連接雲端硬碟</a></li>
     <li><a href="#s9">9. 把 Bot 拉進群組試試看</a></li>
     <li><a href="#s10">10.（選用）邀請成員</a></li>
-    <li><a href="#s11">11.（選用）AI 讀內容分類</a></li>
+    <li><a href="#s11">11. AI 讀內容分類（免費）</a></li>
     <li><a href="#s12">12. 之後怎麼更新</a></li>
     <li><a href="#s13">13.（進階）請 Claude 幫你改</a></li>
     <li><a href="#help">卡住了怎麼辦</a></li>
@@ -245,7 +245,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 40px 0; }
       <tr><td>Cloudflare</td><td>你的</td><td>網站、資料庫（檔案清單、規則、成員、登入紀錄）</td></tr>
       <tr><td>Google</td><td>你的</td><td>登入用的 OAuth 用戶端；檔案存在你的雲端硬碟</td></tr>
       <tr><td>LINE</td><td>你的</td><td>你自己的官方帳號（Bot）</td></tr>
-      <tr><td>Claude API</td><td>你的（選用）</td><td>AI 讀內容分類，用量算在你的帳號</td></tr>
+      <tr><td>AI</td><td>你的</td><td>預設用你 Cloudflare 帳號裡免費的 Workers AI；選用 Gemini 或 Claude 時也是你自己的金鑰</td></tr>
     </tbody>
   </table>
   </div>
@@ -521,13 +521,26 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 40px 0; }
   <figcaption><b>成員與權限</b>每個人看得到哪些群組、能做什麼，這一頁一次看清楚。移除成員後，他會立刻被登出。</figcaption></figure>
 
 <!-- ============ 11 ============ -->
-<h2 id="s11"><span class="part-head">11. AI 讀內容分類 <span class="tag opt">選用・依用量付費</span></span></h2>
-<p>打開後，GrabIt 會讀檔案內容（PDF、Word、Excel、簡報、圖片），自動產生摘要和標籤；檔名規則判斷不了的檔案，也會由 AI 建議該放哪個資料夾。不打開也能正常使用。</p>
-<div class="step"><div class="num">1</div><div class="body"><p>到 <a href="https://console.anthropic.com/" target="_blank" rel="noopener">console.anthropic.com</a> 註冊，在 <span class="btn">Billing</span> 儲值一點額度（例如 5 美元），再到 <span class="btn">API Keys</span> 按 <span class="btn">Create Key</span>，複製那把鑰匙（<code>sk-ant-</code> 開頭）。</p></div></div>
-<div class="step"><div class="num">2</div><div class="body"><p>照第 6 步的方式，在 Cloudflare 加一個 <b>Secret</b>：</p>
-  <div class="copy"><code>ANTHROPIC_API_KEY</code><button type="button">複製</button></div>
-  <p>值貼上剛剛的鑰匙，按 <span class="btn">Deploy</span>。</p></div></div>
-<div class="note tip"><b>可以控制花費</b>在 GrabIt 的 <span class="btn">設定</span> → <span class="btn">一般</span> 可以整個關掉 AI，或在個別群組的設定裡關掉。Anthropic 後台也可以設每月上限。</div>
+<h2 id="s11"><span class="part-head">11. AI 讀內容分類 <span class="tag">免費・已經開著</span></span></h2>
+<p>GrabIt 預設用 <b>Cloudflare 的 Workers AI</b> 讀檔案內容：產生摘要和標籤，檔名規則判斷不了的檔案，AI 會建議該放哪個資料夾。它跑在你自己的 Cloudflare 帳號裡，<b>不用申請金鑰、不用付費</b>，第 3 步部署好就已經開著了。</p>
+<ul class="plain">
+  <li><b>免費額度</b>：每天大約可以分析 50～100 份文件（文件越長用得越多）。用完就暫停到隔天早上 8 點（台灣時間），檔案照常歸檔，沒分析到的之後自動補做。<b>不會自動改用付費模型。</b></li>
+  <li><b>先歸檔、再分析</b>：檔案會先照群組和規則存好，AI 是之後才在背景跑的。AI 出錯也不會讓檔案不見。</li>
+  <li><b>不會亂搬</b>：只有把握度夠高（預設 85%）、而且是已經存在的資料夾，AI 才會自動搬。其他的會出現在 <span class="btn">檔案</span> → <span class="btn">AI 待確認</span>，由你按「採用建議」、「編輯」或「略過」。</li>
+  <li><b>讀得到什麼</b>：Word、Excel、簡報、PDF 的文字都讀得到（掃描的 PDF 可能讀不到字）；照片只會依檔名判斷。</li>
+</ul>
+<div class="note tip"><b>想調整？</b>到 GrabIt 的 <span class="btn">設定</span> → <span class="btn">一般</span> → <b>AI 文件判讀</b>：可以改每日上限、信心門檻、要不要自動改檔名，或整個關掉。某個群組不想讓 AI 讀，就在那個群組的設定把「AI 判讀內容」關掉。舊的檔案也可以在這裡按「開始」補做分析。</div>
+
+<h3 id="s11-gemini">（選用）改用 Gemini 免費版</h3>
+<p>Gemini 可以直接讀 PDF 和照片，判斷通常更準，也是免費的。但要注意：<b>Gemini 免費版會用你送出去的內容來改善 Google 的產品</b>，所以 GrabIt 預設只會把「你勾選允許的群組」的檔案送過去。</p>
+<div class="step"><div class="num">1</div><div class="body"><p>打開 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio 的 API 金鑰頁</a>，用你的 Gmail 登入，按 <span class="btn">Create API key</span>（建立 API 金鑰），選一個<b>沒有開啟付款（Billing）</b>的專案，複製金鑰。</p>
+  <div class="note warn"><b>不要開啟 Billing</b>專案開了付款，超過免費額度就會開始收費。沒開的話，額度用完只會暫停。</div>
+</div></div>
+<div class="step"><div class="num">2</div><div class="body"><p>照第 6 步的方式，在 Cloudflare 加一個 <b>Secret</b>，值貼上金鑰，按 <span class="btn">Deploy</span>：</p>
+  <div class="copy"><code>GEMINI_API_KEY</code><button type="button">複製</button></div></div></div>
+<div class="step"><div class="num">3</div><div class="body"><p>GrabIt 的 <span class="btn">設定</span> → <span class="btn">一般</span> → <b>AI 文件判讀</b>，引擎選 <b>Gemini 免費 API</b>，按 <span class="btn">儲存 AI 設定</span>。</p></div></div>
+<div class="step"><div class="num">4</div><div class="body"><p>到 <span class="btn">群組</span>，對<b>可以送出去的群組</b>按 <span class="btn">設定</span>，打開「允許送交外部 AI（Gemini 免費版）」。公司機密、個資的群組請不要打開。</p></div></div>
+<div class="note tip"><b>Claude（付費）</b>如果你有 Anthropic 的 API 金鑰，也可以設定 <code>ANTHROPIC_API_KEY</code>，改用 Claude 判讀（依用量付費），還可以用「問 AI」一句話查檔案。</div>
 
 <!-- ============ 12 ============ -->
 <h2 id="s12"><span class="part-head">12. 之後怎麼更新到新版 <span class="tag">約 3 分鐘</span></span></h2>
@@ -601,6 +614,10 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 40px 0; }
 <details>
   <summary>大約一週後，檔案突然存不進雲端硬碟</summary>
   <div><p>Google 應用程式還在「測試中」，授權 7 天就過期。照<a href="#s4-4">第 4-4 步</a>發布，然後到 GrabIt 的 <span class="btn">設定</span> → <span class="btn">雲端空間</span> 重新授權一次。</p></div>
+</details>
+<details>
+  <summary>AI 判讀顯示「延後分析」或「今天的免費額度已用完」</summary>
+  <div><p>今天的免費額度用完了，GrabIt 會暫停到額度重置（Workers AI 是台灣時間早上 8 點，Gemini 是美西午夜），之後自動補做，檔案本身都已經歸檔好。想讓重要的檔案先分析，可以在檔案資訊按 <span class="btn">重新分析</span>；想多分析幾份，可以在 <span class="btn">設定</span> 調高每日上限，但 Workers AI 免費版每天最多 10,000 Neurons。</p></div>
 </details>
 <details>
   <summary>按「更新 GrabIt 到最新版」出現紅色叉叉</summary>

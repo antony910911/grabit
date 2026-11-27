@@ -1,6 +1,7 @@
 // 檔案、資料夾、版本、重複檔案、上傳、下載、復原
 import { Hono } from 'hono';
-import { addTags, getFile, getGroup, log, type FileRow } from '../db';
+import { addTags, getFile, getGroup, log, projectIdByName, type FileRow } from '../db';
+import { queueAi, type StoredSuggestion } from '../ai-job';
 import { canSeeGroup, fileScope, type CurrentUser } from '../permissions';
 import { classifyFile, enqueueFile, DUPLICATE_FOLDER } from '../processor';
 import { getStorage, providerFor, type StorageRow } from '../storage';
@@ -29,7 +30,7 @@ const CATEGORY_EXT: Record<string, string[]> = {
 
 export const FILE_SELECT = `SELECT f.id, f.group_id, f.sender_name, f.message_type, f.original_name, f.stored_name, f.ext, f.size, f.folder_path, f.drive_link,
   f.unsorted, f.manual, f.status, f.duplicate_of, f.error, f.attempts, f.received_at, f.storage_id, f.project_id, f.source, f.classified_by,
-  f.version_key, f.version_label, f.ai_summary, f.target_folder, f.matched_rule_id, f.root_ref,
+  f.version_key, f.version_label, f.ai_summary, f.target_folder, f.matched_rule_id, f.root_ref, f.ai_status, f.ai_error, f.ai_at,
   COALESCE(g.alias, g.name, f.group_id) AS group_name, r.name AS rule_name, p.name AS project_name, p.color AS project_color, s.name AS storage_name,
   (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color, 'source', ft.source)) FROM file_tags ft JOIN tags t ON t.id = ft.tag_id WHERE ft.file_id = f.id) AS tags_json,
   (SELECT COUNT(*) FROM files v WHERE v.version_key = f.version_key AND v.status = 'done') AS version_count
@@ -93,6 +94,12 @@ files.get('/files', async (c) => {
       break;
     case 'ai':
       parts.where.push("f.status = 'done' AND f.classified_by = 'ai'");
+      break;
+    case 'ai_review':
+      // AI 有建議、但信心不夠或是新資料夾，等人確認
+      parts.where.push(
+        "f.status = 'done' AND f.unsorted = 1 AND f.ai_status = 'done' AND json_extract(f.ai_suggestion, '$.folder') IS NOT NULL AND COALESCE(json_extract(f.ai_suggestion, '$.dismissed'), 0) = 0 AND COALESCE(json_extract(f.ai_suggestion, '$.applied.folder'), 0) = 0",
+      );
       break;
     case 'failed':
       parts.where.push("f.status = 'failed'");
@@ -367,15 +374,57 @@ files.post('/files/:id/keep', async (c) => {
 });
 
 /** 採用 AI 建議的分類 */
+/**
+ * 採用 AI 建議（可以先編輯）。沒有帶任何欄位時只採用建議的資料夾。
+ * 套用的內容和手動搬移一樣會記在歸檔紀錄，可以復原。
+ */
 files.post('/files/:id/accept-ai', async (c) => {
   const user = need(c, 'editor');
   const file = await visibleFile(c, intParam(c));
-  const s = file.ai_suggestion ? (JSON.parse(file.ai_suggestion) as { folder: string | null; project: string | null }) : null;
-  if (!s?.folder || file.status !== 'done') throw bad('沒有可以採用的 AI 建議');
+  const s = file.ai_suggestion ? (JSON.parse(file.ai_suggestion) as StoredSuggestion) : null;
+  if (!s || file.status !== 'done') throw bad('沒有可以採用的 AI 建議');
+  const b = await readJson<{ folder?: string | null; name?: string | null; project?: string | null; tags?: string[] }>(c);
+  const empty = b.folder === undefined && b.name === undefined && b.project === undefined && b.tags === undefined;
+  const folder = empty ? s.folder : b.folder;
+  if (empty && !folder) throw bad('AI 沒有建議資料夾');
+  const targetFolder = folder ? cleanFolderPath(folder) : file.folder_path!;
+  const targetName = b.name ? sanitizeSegment(b.name) : file.stored_name!;
+  if (!targetName || targetName === '_') throw bad('檔名不能是空的');
   const batchId = newBatchId();
-  const r = await moveFile(c.env, file, cleanFolderPath(s.folder), file.stored_name!, { batchId, description: `採用 AI 建議：${s.folder}`, userEmail: user.email, manual: false });
-  await c.env.DB.prepare("UPDATE files SET unsorted = 0, classified_by = 'ai' WHERE id = ?").bind(file.id).run();
+  let r = { folderPath: file.folder_path!, storedName: file.stored_name! };
+  if (targetFolder !== file.folder_path || targetName !== file.stored_name) {
+    r = await moveFile(c.env, file, targetFolder, targetName, { batchId, description: `採用 AI 建議：${targetFolder}/${targetName}`, userEmail: user.email, manual: false });
+  }
+  if (folder) await c.env.DB.prepare("UPDATE files SET unsorted = 0, classified_by = 'ai' WHERE id = ?").bind(file.id).run();
+  if (b.project) {
+    const pid = await projectIdByName(c.env, b.project);
+    if (!pid) throw bad(`找不到專案「${b.project}」`);
+    await c.env.DB.prepare('UPDATE files SET project_id = ? WHERE id = ?').bind(pid, file.id).run();
+  }
+  if (b.tags?.length) await addTags(c.env, file.id, b.tags.map((t) => String(t).slice(0, 20)).filter(Boolean).slice(0, 10), 'ai');
+  const applied = { ...s.applied, ...(folder ? { folder: true } : {}), ...(b.name ? { name: true } : {}), ...(b.project ? { project: true } : {}) };
+  await c.env.DB.prepare('UPDATE files SET ai_suggestion = ? WHERE id = ?').bind(JSON.stringify({ ...s, applied }), file.id).run();
+  await indexFile(c.env, file.id);
   return c.json({ ok: true, batchId, ...r });
+});
+
+/** 略過 AI 建議（檔案留在原處，不再出現在「AI 待確認」） */
+files.post('/files/:id/ai/dismiss', async (c) => {
+  need(c, 'editor');
+  const file = await visibleFile(c, intParam(c));
+  if (!file.ai_suggestion) throw bad('沒有 AI 建議');
+  await c.env.DB.prepare('UPDATE files SET ai_suggestion = ? WHERE id = ?').bind(JSON.stringify({ ...(JSON.parse(file.ai_suggestion) as StoredSuggestion), dismissed: true }), file.id).run();
+  return c.json({ ok: true });
+});
+
+/** 重新分析（規則已分類的檔案也可以，但不會覆蓋規則的分類） */
+files.post('/files/:id/ai', async (c) => {
+  need(c, 'editor');
+  const file = await visibleFile(c, intParam(c));
+  if (file.status !== 'done') throw bad('檔案還沒歸檔完成');
+  const r = await queueAi(c.env, c.executionCtx, file.id, { force: true });
+  if (!r.queued) throw bad(r.reason ?? '無法分析這個檔案');
+  return c.json({ ok: true, ...(await c.env.DB.prepare('SELECT ai_status, ai_error FROM files WHERE id = ?').bind(file.id).first()) });
 });
 
 /** 重新套用規則：先 dryRun 預覽，確認後再搬移；手動調整過的檔案不會動 */

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, type FileDetail, type Project, type Suggestion } from './api';
 import { ErrorBox, FileIcon, FolderInput, Icon, Loading, ProjectBadge, Sheet, SourceIcon, StatusBadge, TagChip } from './components';
 import { ask, canEdit, formatBytes, formatTime, lineDiff, navigate, useLoad, useMe, useToast } from './lib';
+import { AiPanel } from './AiPanel';
 
 const HOW: Record<string, string> = { rule: '檔名規則', ai: 'AI 判讀內容', group: '群組預設資料夾', manual: '手動調整', none: '沒有符合的規則' };
 
@@ -175,28 +176,19 @@ export function FileSheet({ id, folders, onClose, onChanged }: { id: number; fol
             </div>
           )}
 
-          {f.ai_summary && (
-            <div className="ai-box">
-              <div className="head">
-                <Icon name="ai" />
-                AI 摘要
-              </div>
-              {f.ai_summary}
-              {f.ai_suggestion && f.unsorted === 1 && f.ai_suggestion.folder && (
-                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
-                  <div className="small">
-                    建議放到 <strong>{f.ai_suggestion.folder}</strong>（把握度 {Math.round(f.ai_suggestion.confidence * 100)}%）
-                  </div>
-                  <div className="small muted">{f.ai_suggestion.reason}</div>
-                  {editable && (
-                    <button className="btn sm primary" style={{ marginTop: 8 }} disabled={busy} onClick={() => action(`/files/${f.id}/accept-ai`, `已採用 AI 建議：${f.ai_suggestion!.folder}`)}>
-                      採用建議
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+          <AiPanel
+            f={f}
+            editable={editable}
+            busy={busy}
+            folders={folders}
+            projects={projects.data?.items ?? []}
+            run={run}
+            onDone={(msg, r) => {
+              if (r.batchId) afterMove(msg, r, refresh);
+              else toast(msg);
+              refresh();
+            }}
+          />
 
           <dl className="kv">
             <dt>位置</dt>

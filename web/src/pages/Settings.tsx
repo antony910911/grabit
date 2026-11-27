@@ -2,16 +2,14 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { api } from '../api';
 import { ErrorBox, Loading, Switch } from '../components';
 import { Link, useLoad, useMe, useToast } from '../lib';
+import { AiCard, type AiSettingsResp } from './AiSettings';
 
 interface SettingsResp {
   webhookUrl: string;
   lineConfigured: boolean;
   queueEnabled: boolean;
   timezone: string;
-  aiKeyConfigured: boolean;
-  aiModel: string;
-  aiEnabled: boolean;
-  aiThreshold: number;
+  ai: AiSettingsResp;
   fullText: boolean;
   semantic: boolean;
   outgoingWebhook: string;
@@ -50,10 +48,10 @@ export function SettingsPage() {
   const toast = useToast();
   const me = useMe();
   const { data: s, error, loading, reload } = useLoad(() => api<SettingsResp>('/settings'), []);
-  const [form, setForm] = useState({ aiThreshold: 0.7, outgoingWebhook: '', outgoingWebhookSecret: '', emailAllowedSenders: '' });
+  const [form, setForm] = useState({ outgoingWebhook: '', outgoingWebhookSecret: '', emailAllowedSenders: '' });
 
   useEffect(() => {
-    if (s) setForm({ aiThreshold: s.aiThreshold, outgoingWebhook: s.outgoingWebhook, outgoingWebhookSecret: '', emailAllowedSenders: s.emailAllowedSenders });
+    if (s) setForm({ outgoingWebhook: s.outgoingWebhook, outgoingWebhookSecret: '', emailAllowedSenders: s.emailAllowedSenders });
   }, [s]);
 
   if (me && me.role !== 'admin') return <div className="notice warn">只有管理員可以修改系統設定。</div>;
@@ -101,27 +99,12 @@ export function SettingsPage() {
             <Copy text={s.webhookUrl} />
           </section>
 
-          <section className="card card-pad">
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <h2>AI 文件判讀</h2>
-              <Switch checked={s.aiEnabled} onChange={(v) => save({ aiEnabled: v }, v ? 'AI 已開啟' : 'AI 已關閉')} label="AI" />
-            </div>
-            <p className="muted small">
-              AI 會讀取檔案內容（PDF、Word、Excel、簡報、圖片），產生摘要與標籤；檔名規則判斷不了時，再由 AI 建議資料夾。模型：{s.aiModel}
-              {!s.aiKeyConfigured && '（尚未設定 ANTHROPIC_API_KEY，AI 功能不會執行）'}
-            </p>
-            <label className="field">
-              <span>
-                AI 自動歸檔的把握度門檻：{Math.round(form.aiThreshold * 100)}%
-              </span>
-              <input type="range" min={0.5} max={0.95} step={0.05} value={form.aiThreshold} onChange={(e) => setForm({ ...form, aiThreshold: Number(e.target.value) })} onMouseUp={() => save({ aiThreshold: form.aiThreshold })} onTouchEnd={() => save({ aiThreshold: form.aiThreshold })} />
-              <small>低於門檻的檔案留在「待分類」，並顯示 AI 的建議讓你一鍵採用</small>
-            </label>
-            <p className="muted small" style={{ marginBottom: 0 }}>
-              搜尋：{s.fullText ? '全文搜尋已啟用' : '一般搜尋'}
-              {s.semantic ? '，語意搜尋已啟用' : '，語意搜尋未啟用（需要 Workers AI 與 Vectorize，見 README）'}
-            </p>
-          </section>
+          <AiCard ai={s.ai} semantic={s.semantic} onSaved={reload} />
+
+          <p className="muted small" style={{ margin: '-4px 4px 0' }}>
+            搜尋：{s.fullText ? '全文搜尋已啟用' : '一般搜尋'}
+            {s.semantic ? '，語意搜尋已啟用' : '，語意搜尋未啟用（需要 Workers AI 與 Vectorize，見 README）'}
+          </p>
 
           <section className="card card-pad">
             <h2>Email 收件（選用）</h2>
@@ -157,10 +140,16 @@ export function SettingsPage() {
             <ul className="list" style={{ marginTop: 8 }}>
               <Check ok={s.lineConfigured}>LINE Channel secret 與 access token</Check>
               <Check ok={s.queueEnabled} optional>
-                Cloudflare Queues（付費方案；沒有時每 5 分鐘自動重試失敗的檔案）
+                Cloudflare Queues（背景處理；沒有時每 5 分鐘自動重試失敗的檔案）
               </Check>
-              <Check ok={s.aiKeyConfigured} optional>
-                AI（ANTHROPIC_API_KEY）
+              <Check ok={s.ai.available.workers} optional>
+                免費 AI 文件判讀（Workers AI）
+              </Check>
+              <Check ok={s.ai.available.gemini} optional>
+                Gemini 免費 API（GEMINI_API_KEY）
+              </Check>
+              <Check ok={s.ai.available.claude} optional>
+                Claude（ANTHROPIC_API_KEY，付費；也提供「問 AI」）
               </Check>
               <Check ok={s.semantic} optional>
                 語意搜尋（Workers AI + Vectorize）

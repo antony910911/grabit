@@ -8,7 +8,9 @@ MS_CLIENT_ID=
 MS_CLIENT_SECRET=
 DROPBOX_APP_KEY=
 DROPBOX_APP_SECRET=
-# AI 文件判讀（選用）
+# AI 文件判讀：預設用 Workers AI（wrangler.toml 的 [ai]，本機開發需要先 npx wrangler login）
+# 選用：Gemini 免費 API、Claude（付費）
+GEMINI_API_KEY=
 ANTHROPIC_API_KEY=
 # 可以登入的管理員 Google 帳號（逗號分隔）
 ADMIN_EMAILS=

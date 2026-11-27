@@ -84,7 +84,7 @@ export function Groups() {
                     {!g.backup_images && <span className="muted">不備份照片</span>}
                     {!g.backup_videos && <span className="muted">不備份影片</span>}
                     {g.notify ? <span>🔔 歸檔通知</span> : null}
-                    {g.ai_enabled ? <span>✨ AI 分類</span> : <span className="muted">AI 關閉</span>}
+                    {g.ai_enabled ? <span>✨ AI 判讀{g.ai_external ? '（可用外部 AI）' : ''}</span> : <span className="muted">AI 關閉</span>}
                     {g.members.length > 0 && <span>👥 {g.members.length} 位成員可看</span>}
                   </div>
                   {g.project_id && g.outside_project > 0 && admin && (
@@ -146,6 +146,7 @@ function GroupSettings({ group, onClose, onSaved }: { group: Group; onClose: () 
           backup_videos: !!g.backup_videos,
           notify: !!g.notify,
           ai_enabled: !!g.ai_enabled,
+          ai_external: !!g.ai_external,
           project_id: g.project_id,
           configured: true,
           members: g.members,
@@ -277,6 +278,15 @@ function GroupSettings({ group, onClose, onSaved }: { group: Group; onClose: () 
         </div>
         <Switch checked={!!g.ai_enabled} onChange={(v) => set('ai_enabled', v ? 1 : 0)} label="AI" />
       </div>
+      {!!g.ai_enabled && (
+        <div className="kv-row">
+          <div className="lbl">
+            允許送交外部 AI（Gemini 免費版）
+            <small>Gemini 免費版會用送出的內容改善 Google 的產品。公司機密、個資的群組請不要打開；使用免費的 Workers AI 時不受影響</small>
+          </div>
+          <Switch checked={!!g.ai_external} onChange={(v) => set('ai_external', v ? 1 : 0)} label="允許送交外部 AI" />
+        </div>
+      )}
       <div className="field" style={{ marginTop: 14 }}>
         <span>檔案存取權限</span>
         {limitedUsers.length === 0 ? (

@@ -93,12 +93,36 @@ export interface FileItem {
   version_count: number;
   ai_summary: string | null;
   target_folder: string | null;
+  ai_status: AiStatus | null;
+  ai_error: string | null;
+  ai_at: string | null;
   tags: Tag[];
+}
+
+export type AiStatus = 'queued' | 'running' | 'done' | 'failed' | 'skipped' | 'deferred';
+
+/** AI 判讀的結果（建議值；信心分數未校準） */
+export interface AiSuggestion {
+  folder: string | null;
+  folderKnown?: boolean;
+  project: string | null;
+  tags: string[];
+  suggestedName?: string | null;
+  confidence: number;
+  reason: string;
+  keyInfo?: string[];
+  warnings?: string[];
+  provider?: string;
+  model?: string;
+  at?: string;
+  read?: 'full' | 'partial' | 'filename';
+  applied?: { folder?: boolean; name?: boolean; project?: boolean };
+  dismissed?: boolean;
 }
 
 export interface FileDetail extends FileItem {
   content_excerpt: string | null;
-  ai_suggestion: { folder: string | null; project: string | null; tags: string[]; confidence: number; reason: string; model?: string } | null;
+  ai_suggestion: AiSuggestion | null;
   versions: { id: number; name: string; version_label: string | null; received_at: string; folder_path: string; sender_name: string | null; group_name: string }[];
   duplicates: { id: number; name: string; status: string; folder_path: string }[];
 }
@@ -134,6 +158,7 @@ export interface Group {
   backup_videos: number;
   notify: number;
   ai_enabled: number;
+  ai_external: number;
   project_id: number | null;
   project_name: string | null;
   file_count: number;
@@ -175,6 +200,7 @@ export interface Stats {
   archived: number;
   unsorted: number;
   byAi: number;
+  aiReview: number;
   failed: number;
   pending: number;
   duplicates: number;
