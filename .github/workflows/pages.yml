@@ -1,0 +1,51 @@
+# 把架設說明書（web/public/setup.html）發布到 GitHub Pages：
+# https://antony910911.github.io/grabit/setup.html
+# 第一次使用前，到倉庫 Settings → Pages → Build and deployment → Source 選「GitHub Actions」。
+name: 發布架設說明書
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - web/public/setup.html
+      - web/public/setup/**
+      - web/public/icon.svg
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    # 用部署按鈕複製出去的 GrabIt 不需要發布說明書（他們自己的網址 /setup.html 就有）
+    if: github.repository == 'antony910911/grabit'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}setup.html
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 準備說明書的檔案
+        run: |
+          mkdir -p _site
+          cp web/public/setup.html web/public/icon.svg _site/
+          cp -r web/public/setup _site/setup
+          # 打開 https://antony910911.github.io/grabit/ 也會直接到說明書
+          printf '%s\n' '<!doctype html><meta charset="utf-8"><title>架一份自己的 GrabIt</title><meta http-equiv="refresh" content="0; url=setup.html"><a href="setup.html">架一份自己的 GrabIt</a>' > _site/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -109,10 +109,11 @@ test/             單元測試與端對端測試
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/antony910911/grabit)
 
-按上面的按鈕，Cloudflare 會把程式碼複製一份到**你自己的** GitHub、在**你自己的** Cloudflare 帳號建立 D1 資料庫與佇列、自動部署（含資料表 migration）。接著照 **[架設說明書](web/public/setup.html)**（部署後在 `你的網址/setup.html` 也看得到）設定 Google、LINE 與密鑰，全程用自己的帳號，有圖文步驟。部署好的網站在還沒設定完成前，登入頁會顯示「第一次設定」清單，列出要貼到 Google、LINE 的網址。
+按上面的按鈕，Cloudflare 會把程式碼複製一份到**你自己的** GitHub、在**你自己的** Cloudflare 帳號建立 D1 資料庫與佇列、自動部署（含資料表 migration）。接著照 **[架設說明書](https://antony910911.github.io/grabit/setup.html)**（原始檔 `web/public/setup.html`，部署後在 `你的網址/setup.html` 也看得到）設定 Google、LINE 與密鑰，全程用自己的帳號，有圖文步驟。部署好的網站在還沒設定完成前，登入頁會顯示「第一次設定」清單，列出要貼到 Google、LINE 的網址。
 
 - 按鈕需要這個倉庫是**公開**的（程式碼裡沒有任何密鑰；`wrangler.toml` 的 Database ID 只對擁有者的帳號有效，部署按鈕會換成部署者自己的）。
 - 之後更新：在自己的倉庫 **Actions → 更新 GrabIt 到最新版 → Run workflow**（`.github/workflows/update-grabit.yml`），會換成最新的程式碼，但保留自己的 Worker 名稱、資料庫 ID 與佇列名稱，推上去後 Cloudflare 自動重新部署。
+- 說明書的網址由 `.github/workflows/pages.yml` 發布到 GitHub Pages（倉庫 Settings → Pages → Source 選 GitHub Actions），改了 `web/public/setup.html` 推到 main 就會自動更新。
 - 維護者注意：部署按鈕建立的專案固定用 `npm run build`、`npm run deploy`（先套用 D1 migration 再部署），這兩個 script 名稱不要改。
 
 ### 手動設定（已經在用的部署照舊）

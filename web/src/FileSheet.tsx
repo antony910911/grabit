@@ -125,6 +125,56 @@ export function FileSheet({ id, folders, onClose, onChanged }: { id: number; fol
             </div>
           </div>
 
+          {(f.status === 'done' || f.status === 'duplicate') && (
+            <div className="file-open">
+              {me?.demo ? (
+                <button className="btn primary file-download" onClick={() => toast('展示版沒有真的檔案；正式版按這裡會直接下載')}>
+                  <Icon name="download" />
+                  下載
+                  {f.size ? <span className="file-size">{formatBytes(f.size)}</span> : null}
+                </button>
+              ) : (
+                // 透過 GrabIt 下載：依 GrabIt 的群組權限判斷，不需要對方有雲端硬碟的權限
+                <a className="btn primary file-download" href={`/api/files/${f.id}/download`} download>
+                  <Icon name="download" />
+                  下載
+                  {f.size ? <span className="file-size">{formatBytes(f.size)}</span> : null}
+                </a>
+              )}
+              {preview && (
+                <button
+                  className="btn"
+                  onClick={async () => {
+                    // 用 fetch 取得內容再開新分頁，沒有雲端權限的人、WebDAV／展示版這類沒有公開連結的空間也能預覽
+                    const w = window.open('', '_blank');
+                    if (!w) {
+                      toast('這個環境不允許開啟新分頁，請在 GrabIt 網站上預覽', 'error');
+                      return;
+                    }
+                    try {
+                      const res = await fetch(preview);
+                      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                      w.location.href = URL.createObjectURL(await res.blob());
+                    } catch (e) {
+                      w.close();
+                      toast(`無法預覽：${(e as Error).message}`, 'error');
+                    }
+                  }}
+                >
+                  <Icon name="eye" />
+                  預覽
+                </button>
+              )}
+              {f.drive_link && (
+                // 只有打得開的人才會拿到雲端連結（雲端帳號本人，或專屬資料夾有分享給他）
+                <a className="btn" href={f.drive_link} target="_blank" rel="noreferrer" title={me?.email ? `用 Google 帳號 ${me.email} 開啟` : undefined}>
+                  <Icon name="external" />
+                  在 {f.storage_name ?? '雲端'} 開啟
+                </a>
+              )}
+            </div>
+          )}
+
           {f.ai_summary && (
             <div className="ai-box">
               <div className="head">
@@ -274,43 +324,6 @@ export function FileSheet({ id, folders, onClose, onChanged }: { id: number; fol
               <button className="btn" onClick={() => setMode('move')}>
                 移動／改名
               </button>
-            )}
-            {preview && (
-              <button
-                className="btn"
-                onClick={async () => {
-                  // 用 fetch 取得內容再開新分頁，WebDAV／展示版這類沒有公開連結的空間也能預覽
-                  const w = window.open('', '_blank');
-                  if (!w) {
-                    toast('這個環境不允許開啟新分頁，請在 GrabIt 網站上預覽', 'error');
-                    return;
-                  }
-                  try {
-                    const res = await fetch(preview);
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    w.location.href = URL.createObjectURL(await res.blob());
-                  } catch (e) {
-                    w.close();
-                    toast(`無法預覽：${(e as Error).message}`, 'error');
-                  }
-                }}
-              >
-                <Icon name="download" />
-                預覽
-              </button>
-            )}
-            {!me?.demo && (f.status === 'done' || f.status === 'duplicate') && (
-              // 透過 GrabIt 下載：依 GrabIt 的群組權限判斷，不需要對方有雲端硬碟的權限
-              <a className="btn" href={`/api/files/${f.id}/download`} download>
-                <Icon name="download" />
-                下載
-              </a>
-            )}
-            {f.drive_link && (f.status === 'done' || f.status === 'duplicate') && (
-              <a className="btn primary" href={f.drive_link} target="_blank" rel="noreferrer">
-                <Icon name="external" />
-                在 {f.storage_name ?? '雲端'} 開啟
-              </a>
             )}
           </div>
         </>
