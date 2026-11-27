@@ -1,19 +1,36 @@
+import type { AiEngine } from './ai';
+
 export interface FileJob {
   fileId: number;
 }
 
 export interface Env {
   DB: D1Database;
-  ASSETS: Fetcher;
+  ASSETS?: Fetcher;
   FILE_QUEUE?: Queue<FileJob>;
+  // 語意搜尋（選用）：Workers AI + Vectorize
+  AI?: { run(model: string, input: unknown): Promise<unknown> };
+  VECTORIZE?: VectorizeIndex;
+
   LINE_CHANNEL_SECRET: string;
   LINE_CHANNEL_ACCESS_TOKEN: string;
-  GOOGLE_CLIENT_ID: string;
-  GOOGLE_CLIENT_SECRET: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  MS_CLIENT_ID?: string;
+  MS_CLIENT_SECRET?: string;
+  DROPBOX_APP_KEY?: string;
+  DROPBOX_APP_SECRET?: string;
+  ANTHROPIC_API_KEY?: string;
+  AI_MODEL?: string;
+
   TIMEZONE?: string;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
+  ADMIN_EMAILS?: string;
   DEV_NO_AUTH?: string;
+
+  // 展示版注入的模擬 AI
+  DEMO_AI?: AiEngine;
 }
 
 /** 不需要重試的錯誤（例如 LINE 檔案已過期） */
@@ -21,7 +38,10 @@ export class PermanentError extends Error {}
 
 /** 稍後再試（例如影片還在轉檔） */
 export class RetryLaterError extends Error {
-  constructor(message: string, readonly delaySeconds = 30) {
+  constructor(
+    message: string,
+    readonly delaySeconds = 30,
+  ) {
     super(message);
   }
 }

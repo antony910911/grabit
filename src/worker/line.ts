@@ -26,6 +26,7 @@ export interface LineEvent {
   timestamp: number;
   source: LineSource;
   webhookEventId?: string;
+  replyToken?: string;
   message?: LineMessage;
 }
 

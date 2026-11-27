@@ -16,16 +16,22 @@
     "test:e2e": "npm run build:web && node test/e2e/run.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.14.0",
+    "fflate": "^0.8.3",
     "hono": "^4.10.0",
-    "jose": "^6.1.0"
+    "jose": "^6.1.0",
+    "postal-mime": "^2.7.6",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261101.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "@types/sql.js": "^1.16.1",
     "@vitejs/plugin-react": "^5.1.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "sql.js": "^1.17.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.0",
     "vitest": "^3.2.4",

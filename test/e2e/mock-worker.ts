@@ -14,6 +14,11 @@ const CONTENT: Record<string, string> = {
   m3: 'farnesene gc data', // 和 m1 內容相同 → 應判定為重複
   m4: 'random attachment',
   m5: 'image bytes',
+  m6: 'image 2',
+  m7: 'misc notes',
+  v1: 'report draft 1',
+  v2: 'report draft 2',
+  v3: 'report final',
 };
 
 async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -77,6 +82,7 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
         if (body.trashed) f.trashed = true;
         const add = url.searchParams.get('addParents');
         if (add) f.parents = [add];
+        if (body.trashed === false) f.trashed = false;
         return json({ id: f.id });
       }
     }

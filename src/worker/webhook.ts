@@ -10,7 +10,7 @@ import {
   type LineEvent,
   type WebhookBody,
 } from './line';
-import { getGroup, log } from './db';
+import { getGroup, groupAccepts, log } from './db';
 import { splitExt } from './rules';
 import { enqueueFile } from './processor';
 
@@ -41,7 +41,7 @@ async function upsertGroup(env: Env, event: LineEvent, joined: boolean) {
     await env.DB.prepare('INSERT OR IGNORE INTO groups (id, source_type, name, joined) VALUES (?, ?, ?, ?)')
       .bind(id, event.source.type, name, joined ? 1 : 0)
       .run();
-    await log(env, 'info', 'group', `新增來源：${name || id}`);
+    await log(env, 'info', 'group', `Bot 加入新群組「${name || id}」，請到「群組」完成設定（在設定前會先用預設值備份）`);
     return getGroup(env, id);
   }
   if (joined && (!existing.joined || !existing.name)) {
@@ -78,11 +78,14 @@ export async function handleEvents(env: Env, ctx: WaitUntil, events: LineEvent[]
         ? msg.fileName
         : generatedFileName(msg.type, msg.id, receivedAt, env.TIMEZONE || 'Asia/Taipei');
     const senderName = await getSenderName(env.LINE_CHANNEL_ACCESS_TOKEN, event.source).catch(() => null);
+    const ext = splitExt(originalName).ext;
+    // 群組設定不接收這種檔案（例如關閉照片備份）：記錄為略過，不下載
+    const accepted = groupAccepts(group, ext, msg.type);
 
     const r = await env.DB.prepare(
       `INSERT OR IGNORE INTO files
-       (line_message_id, group_id, sender_id, sender_name, message_type, original_name, ext, size, image_set_id, received_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (line_message_id, group_id, sender_id, sender_name, message_type, original_name, ext, size, image_set_id, received_at, reply_token, source, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'line', ?)`,
     )
       .bind(
         msg.id,
@@ -91,14 +94,16 @@ export async function handleEvents(env: Env, ctx: WaitUntil, events: LineEvent[]
         senderName,
         msg.type,
         originalName,
-        splitExt(originalName).ext,
+        ext,
         msg.fileSize ?? null,
         msg.imageSet?.id ?? null,
         receivedAt.toISOString(),
+        event.replyToken ?? null,
+        accepted ? 'pending' : 'skipped',
       )
       .run();
     // changes = 0 代表 LINE 重送的同一則訊息，已經處理過
-    if (!r.meta.changes) continue;
+    if (!r.meta.changes || !accepted) continue;
     await enqueueFile(env, ctx, Number(r.meta.last_row_id));
   }
 }

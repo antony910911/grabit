@@ -12,6 +12,15 @@ export interface Rule {
   target_path: string;
   rename_template: string | null;
   enabled: number | boolean;
+  project_id?: number | null;
+  tags?: string | null;
+}
+
+export interface ClassifyOptions {
+  /** 沒有規則符合時的資料夾（群組設定），預設「待分類/{group}」 */
+  fallbackPath?: string | null;
+  /** 規則沒有指定改名時使用的群組預設改名範本 */
+  defaultRename?: string | null;
 }
 
 export interface FileContext {
@@ -78,16 +87,23 @@ export function sortRules<T extends Pick<Rule, 'priority' | 'id'>>(rules: T[]): 
   return [...rules].sort((a, b) => a.priority - b.priority || a.id - b.id);
 }
 
-export function classify(rules: Rule[], ctx: FileContext): ClassifyResult {
+export function classify(rules: Rule[], ctx: FileContext, opts: ClassifyOptions = {}): ClassifyResult {
   const rule = sortRules(rules).find((r) => ruleMatches(r, ctx)) ?? null;
-  const template = rule ? rule.target_path : UNSORTED_PATH;
+  const template = rule ? rule.target_path : opts.fallbackPath?.trim() || UNSORTED_PATH;
   const vars = templateVars(ctx);
   return {
     rule,
     folderPath: renderPath(template, vars),
-    storedName: renderFileName(rule?.rename_template ?? null, ctx.fileName, vars),
+    storedName: renderFileName(rule?.rename_template || opts.defaultRename || null, ctx.fileName, vars),
     unsorted: rule === null,
   };
+}
+
+export function splitList(s: string | null | undefined): string[] {
+  return (s ?? '')
+    .split(KEYWORD_SPLIT)
+    .map((x) => x.trim())
+    .filter(Boolean);
 }
 
 function datePartsIn(date: Date, timeZone: string) {
