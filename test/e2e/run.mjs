@@ -10,7 +10,7 @@ const SECRET = 'e2e-secret';
 const PORT = Number(process.env.E2E_PORT ?? 8799);
 const BASE = `http://127.0.0.1:${PORT}`;
 const persist = mkdtempSync(join(tmpdir(), 'grabit-e2e-'));
-const cfg = 'test/e2e/wrangler.e2e.toml';
+const cfg = process.env.E2E_CONFIG ?? 'test/e2e/wrangler.e2e.toml';
 const sh = (cmd) => execSync(cmd, { stdio: 'pipe' }).toString();
 
 let failed = 0;
@@ -26,7 +26,7 @@ sh(
 
 const dev = spawn(
   'npx',
-  ['wrangler', 'dev', '-c', cfg, '--port', String(PORT), '--persist-to', persist, '--var', `LINE_CHANNEL_SECRET:${SECRET}`, '--var', 'LINE_CHANNEL_ACCESS_TOKEN:x', '--var', 'GOOGLE_CLIENT_ID:x', '--var', 'GOOGLE_CLIENT_SECRET:x', '--var', 'DEV_NO_AUTH:true'],
+  ['wrangler', 'dev', '--test-scheduled', '-c', cfg, '--port', String(PORT), '--persist-to', persist, '--var', `LINE_CHANNEL_SECRET:${SECRET}`, '--var', 'LINE_CHANNEL_ACCESS_TOKEN:x', '--var', 'GOOGLE_CLIENT_ID:x', '--var', 'GOOGLE_CLIENT_SECRET:x', '--var', 'DEV_NO_AUTH:true'],
   { stdio: ['ignore', 'pipe', 'pipe'], detached: true },
 );
 let logs = '';
@@ -199,6 +199,9 @@ try {
   check('失敗檔案可以重試', r.status === 200);
   r = await api('/api/operations');
   check('操作紀錄', r.body.items.length >= 3);
+
+  const sched = await fetch(BASE + '/__scheduled?cron=*/5+*+*+*+*');
+  check('排程重試可以執行', sched.ok, String(sched.status));
 
   const page = await fetch(BASE + '/files');
   check('SPA 路由回傳管理介面', page.ok && (await page.text()).includes('<div id="root">'));

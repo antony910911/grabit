@@ -138,7 +138,9 @@ export function SettingsPage() {
             <h2>設定檢查</h2>
             <ul className="list" style={{ marginTop: 8 }}>
               <Check ok={s.lineConfigured}>LINE Channel secret 與 access token</Check>
-              <Check ok={s.queueEnabled}>Cloudflare Queue（處理失敗時自動重試）</Check>
+              <Check ok={s.queueEnabled} optional>
+                Cloudflare Queues（付費方案；沒有時每 5 分鐘自動重試失敗的檔案）
+              </Check>
               <Check ok={s.aiKeyConfigured} optional>
                 AI（ANTHROPIC_API_KEY）
               </Check>

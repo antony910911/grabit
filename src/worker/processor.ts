@@ -265,6 +265,24 @@ export async function processWithStatus(env: Env, fileId: number, attempt: numbe
   return runWithStatus(env, fileId, attempt, () => archiveFile(env, fileId, lineSource(env, file), opts));
 }
 
+/**
+ * 排程重試（沒有 Queues 時的備援）：撿回等待重試、或處理到一半中斷的檔案。
+ * 依嘗試次數拉長間隔：第 n 次失敗後至少等 2^(n-1) × 5 分鐘。
+ */
+export async function retryPending(env: Env, limit = 5): Promise<number> {
+  const rows = await env.DB.prepare(
+    `SELECT id, attempts FROM files
+     WHERE source = 'line' AND attempts < ? AND (
+       (status = 'pending' AND updated_at <= datetime('now', '-' || (5 * (1 << MIN(attempts, 6))) || ' minutes'))
+       OR (status = 'processing' AND updated_at <= datetime('now', '-15 minutes')))
+     ORDER BY updated_at LIMIT ?`,
+  )
+    .bind(MAX_ATTEMPTS, limit)
+    .all<{ id: number; attempts: number }>();
+  for (const r of rows.results) await processWithStatus(env, r.id, r.attempts + 1);
+  return rows.results.length;
+}
+
 export async function handleQueue(batch: MessageBatch<FileJob>, env: Env): Promise<void> {
   for (const msg of batch.messages) {
     const r = await processWithStatus(env, msg.body.fileId, msg.attempts);

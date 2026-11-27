@@ -26,17 +26,23 @@ database_name = "grabit"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
 
-[[queues.producers]]
-binding = "FILE_QUEUE"
-queue = "grabit-files"
+# 每 5 分鐘把失敗或卡住的檔案撿回來重試（免費方案可用）
+[triggers]
+crons = ["*/5 * * * *"]
 
-[[queues.consumers]]
-queue = "grabit-files"
-max_batch_size = 5
-max_batch_timeout = 5
-max_retries = 6
-# 一次只跑一個 consumer，避免同時建立重複的雲端資料夾
-max_concurrency = 1
+# ---------- 選用：Cloudflare Queues（需要 Workers Paid 方案） ----------
+# 有 Queues 時，收到的檔案改由佇列處理，重試更即時。建立 grabit-files 佇列後取消下面的註解。
+# [[queues.producers]]
+# binding = "FILE_QUEUE"
+# queue = "grabit-files"
+#
+# [[queues.consumers]]
+# queue = "grabit-files"
+# max_batch_size = 5
+# max_batch_timeout = 5
+# max_retries = 6
+# # 一次只跑一個 consumer，避免同時建立重複的雲端資料夾
+# max_concurrency = 1
 
 [observability]
 enabled = true
