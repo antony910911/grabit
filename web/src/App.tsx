@@ -1,46 +1,42 @@
-import { useEffect, useState } from 'react';
-import { api, ApiError, logout, type Me } from './api';
+import { useEffect, useState, type ReactElement } from 'react';
+import { api, ApiError, logout, type Me, type Role } from './api';
 import { Brand, Icon, Sheet } from './components';
 import { ConfirmHost, Link, MeCtx, navigate, usePath, useToast } from './lib';
 import { Dashboard } from './pages/Dashboard';
-import { Files } from './pages/Files';
 import { Rules } from './pages/Rules';
 import { Groups } from './pages/Groups';
-import { SettingsPage } from './pages/Settings';
 import { Logs } from './pages/Logs';
 import { Library } from './pages/Library';
 import { Ask } from './pages/Ask';
-import { Storages } from './pages/Storages';
-import { Users } from './pages/Users';
 import { Login } from './pages/Login';
+import { Account } from './pages/Account';
+import { AdminSettings } from './pages/AdminSettings';
+import { applyTheme } from './theme';
 
 interface NavItem {
   to: string;
   label: string;
   icon: string;
-  admin?: boolean;
+  /** 至少要這個角色才看得到 */
+  role?: Role;
+  match?: string[];
 }
 
+const RANK: Record<Role, number> = { viewer: 0, editor: 1, admin: 2 };
+const allowed = (me: Me | null, role?: Role) => !role || (!!me && RANK[me.role] >= RANK[role]);
+
+// 主要功能：每個人都看得到
 const MAIN: NavItem[] = [
   { to: '/', label: '總覽', icon: 'home' },
-  { to: '/files', label: '全部檔案', icon: 'files' },
-  { to: '/library', label: '整理', icon: 'layers' },
+  { to: '/files', label: '檔案', icon: 'files', match: ['/files', '/library', '/folders', '/labels'] },
   { to: '/ask', label: '問 AI', icon: 'ai' },
 ];
-const SYSTEM: NavItem[] = [
-  { to: '/rules', label: '分類規則', icon: 'rules' },
-  { to: '/groups', label: '群組設定', icon: 'groups' },
-  { to: '/storages', label: '雲端設定', icon: 'cloud' },
-  { to: '/logs', label: '歸檔紀錄', icon: 'history' },
-  { to: '/users', label: '成員與權限', icon: 'users', admin: true },
-  { to: '/settings', label: '系統設定', icon: 'settings', admin: true },
-];
-const BOTTOM: NavItem[] = [
-  { to: '/', label: '總覽', icon: 'home' },
-  { to: '/files', label: '檔案', icon: 'files' },
-  { to: '/library', label: '整理', icon: 'layers' },
-  { to: '/ask', label: '問 AI', icon: 'ai' },
-  { to: '/more', label: '更多', icon: 'more' },
+// 管理：依角色顯示
+const MANAGE: NavItem[] = [
+  { to: '/rules', label: '分類規則', icon: 'rules', role: 'editor' },
+  { to: '/groups', label: '群組', icon: 'groups', role: 'editor' },
+  { to: '/logs', label: '歸檔紀錄', icon: 'history', role: 'editor' },
+  { to: '/settings', label: '設定', icon: 'settings', role: 'admin', match: ['/settings', '/storages', '/users'] },
 ];
 
 export interface DemoApi {
@@ -57,61 +53,38 @@ declare global {
   }
 }
 
-function Account({ me }: { me: Me | null }) {
-  const [sessions, setSessions] = useState<{ id: string; last_seen: string; user_agent: string | null; current: boolean }[] | null>(null);
-  useEffect(() => {
-    if (!me?.demo) api<{ items: { id: string; last_seen: string; user_agent: string | null; current: boolean }[] }>('/me/sessions').then((r) => setSessions(r.items)).catch(() => {});
-  }, [me]);
-  const toast = useToast();
-  const others = async () => {
-    const r = await api<{ revoked: number }>('/me/logout-others', { method: 'POST', json: {} });
-    toast(`已登出其他 ${r.revoked} 個裝置`);
-    setSessions((s) => s?.filter((x) => x.current) ?? null);
-  };
-  return (
-    <div className="card card-pad" style={{ marginTop: 14 }}>
-      <h2>帳號</h2>
-      <p className="muted small" style={{ margin: '4px 0 12px' }}>
-        {me?.name ? `${me.name}（${me.email}）` : me?.email}・{{ admin: '管理員', editor: '編輯者', viewer: '檢視者' }[me?.role ?? 'viewer']}
-        {sessions ? `・${sessions.length} 個裝置登入中` : ''}
-      </p>
-      <div className="row">
-        <button className="btn" onClick={() => logout()}>
-          登出
-        </button>
-        {sessions && sessions.length > 1 && (
-          <button className="btn" onClick={others}>
-            登出其他裝置
-          </button>
-        )}
-        <button className="btn danger" onClick={() => logout(true)}>
-          登出所有裝置
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function More({ me }: { me: Me | null }) {
+  const items = MANAGE.filter((n) => allowed(me, n.role));
   return (
     <>
       <div className="page-head">
         <div>
-          <h1>系統管理</h1>
-          <p>{me?.email}</p>
+          <h1>更多</h1>
+          <p>{me?.name ?? me?.email}</p>
         </div>
       </div>
+      {items.length > 0 && (
+        <div className="card menu-list" style={{ marginBottom: 14 }}>
+          {items.map((n) => (
+            <Link key={n.to} to={n.to}>
+              <Icon name={n.icon} />
+              {n.label}
+            </Link>
+          ))}
+        </div>
+      )}
       <div className="card menu-list">
-        {SYSTEM.filter((n) => !n.admin || me?.role === 'admin').map((n) => (
-          <Link key={n.to} to={n.to}>
-            <Icon name={n.icon} />
-            {n.label}
-          </Link>
-        ))}
+        <Link to="/account">
+          <Icon name="users" />
+          個人設定（外觀、登入）
+        </Link>
       </div>
-      {!me?.demo && <Account me={me} />}
     </>
   );
+}
+
+function NoAccess({ need }: { need: Role }) {
+  return <div className="notice warn">這一頁需要「{need === 'admin' ? '管理員' : '編輯者'}」以上的權限。需要的話請找管理員。</div>;
 }
 
 function Simulator({ onClose }: { onClose: () => void }) {
@@ -195,7 +168,10 @@ export function App() {
   const [simulate, setSimulate] = useState(false);
   useEffect(() => {
     api<Me>('/me')
-      .then(setMe)
+      .then((m) => {
+        setMe(m);
+        if (m.prefs) applyTheme(m.prefs);
+      })
       .catch((e: Error) => (e instanceof ApiError && e.status === 401 ? setNeedLogin(null) : setMeError(e.message)));
     const onLogin = (e: Event) => setNeedLogin((e as CustomEvent<string>).detail);
     window.addEventListener('grabit-login-required', onLogin);
@@ -204,28 +180,28 @@ export function App() {
 
   if (needLogin !== false || (path === '/login' && !me)) return <Login message={needLogin || null} />;
 
-  const active = (to: string) => (to === '/' ? path === '/' : path.startsWith(to));
+  const isActive = (n: NavItem) => (n.to === '/' ? path === '/' : (n.match ?? [n.to]).some((m) => path.startsWith(m)));
+  const guard = (role: Role, el: ReactElement) => (me && !allowed(me, role) ? <NoAccess need={role} /> : el);
   let page;
-  if (path.startsWith('/files')) page = <Files />;
+  if (['/files', '/library', '/folders', '/labels'].some((m) => path.startsWith(m))) page = <Library key={path} />;
   else if (path.startsWith('/ask')) page = <Ask />;
-  else if (path.startsWith('/library')) page = <Library />;
-  else if (path.startsWith('/folders')) page = <Library />;
-  else if (path.startsWith('/labels')) page = <Library />;
-  else if (path.startsWith('/rules')) page = <Rules />;
-  else if (path.startsWith('/groups')) page = <Groups />;
-  else if (path.startsWith('/storages')) page = <Storages />;
-  else if (path.startsWith('/users')) page = <Users />;
-  else if (path.startsWith('/logs')) page = <Logs />;
-  else if (path.startsWith('/settings')) page = <SettingsPage />;
+  else if (path.startsWith('/rules')) page = guard('editor', <Rules />);
+  else if (path.startsWith('/groups')) page = guard('editor', <Groups />);
+  else if (path.startsWith('/logs')) page = guard('editor', <Logs />);
+  else if (['/settings', '/storages', '/users'].some((m) => path.startsWith(m))) page = guard('admin', <AdminSettings />);
+  else if (path.startsWith('/account')) page = <Account me={me} onPrefs={(prefs) => setMe((m) => (m ? { ...m, prefs } : m))} />;
   else if (path.startsWith('/more')) page = <More me={me} />;
   else page = <Dashboard onSimulate={me?.demo && window.__grabitDemo ? () => setSimulate(true) : undefined} />;
 
   const navLink = (n: NavItem) => (
-    <Link key={n.to} to={n.to} className={active(n.to) ? 'active' : ''}>
+    <Link key={n.to} to={n.to} className={isActive(n) ? 'active' : ''}>
       <Icon name={n.icon} />
       {n.label}
     </Link>
   );
+  const manage = MANAGE.filter((n) => allowed(me, n.role));
+  // 手機底部：總覽、檔案、問 AI、（編輯者以上）規則、更多
+  const bottom: NavItem[] = [...MAIN, ...(allowed(me, 'editor') ? [MANAGE[0]!] : []), { to: '/more', label: '更多', icon: 'more', match: ['/more', '/account', ...manage.slice(1).flatMap((n) => n.match ?? [n.to])] }];
 
   return (
     <MeCtx.Provider value={me}>
@@ -241,19 +217,19 @@ export function App() {
             <Brand />
           </div>
           {MAIN.map(navLink)}
-          <div className="section">系統管理</div>
-          {SYSTEM.filter((n) => !n.admin || me?.role === 'admin').map(navLink)}
+          {manage.length > 0 && <div className="section">管理</div>}
+          {manage.map(navLink)}
           {me && (
             <div className="foot">
-              {me.name ?? me.email}
-              <br />
-              {{ admin: '管理員', editor: '編輯者', viewer: '檢視者' }[me.role]}
+              <Link to="/account">
+                <strong style={{ color: 'var(--text)' }}>{me.name ?? me.email}</strong>
+                <br />
+                {{ admin: '管理員', editor: '編輯者', viewer: '檢視者' }[me.role]}・個人設定
+              </Link>
               {!me.demo && (
-                <div>
-                  <button className="btn sm ghost" style={{ padding: 0 }} onClick={() => logout()}>
-                    登出
-                  </button>
-                </div>
+                <button className="btn sm ghost" style={{ padding: 0, marginTop: 6 }} onClick={() => logout()}>
+                  登出
+                </button>
               )}
             </div>
           )}
@@ -262,8 +238,8 @@ export function App() {
           {meError ? <div className="notice danger">{meError}</div> : page}
         </main>
         <nav className="bottom-nav" aria-label="主選單">
-          {BOTTOM.map((n) => (
-            <Link key={n.to} to={n.to} className={active(n.to) || (n.to === '/more' && SYSTEM.some((s) => active(s.to))) ? 'active' : ''}>
+          {bottom.map((n) => (
+            <Link key={n.to} to={n.to} className={isActive(n) ? 'active' : ''}>
               <Icon name={n.icon} />
               {n.label}
             </Link>

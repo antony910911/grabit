@@ -3,21 +3,26 @@ import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from 're
 import { api, type FileItem, type Project, type Storage, type Tag } from '../api';
 import { Empty, ErrorBox, FileIcon, Icon, Loading, Sheet, TagChip } from '../components';
 import { FileSheet, useAfterMove } from '../FileSheet';
+import { Files } from './Files';
 import { ask, canEdit, currentUrl, formatBytes, formatTime, replaceUrl, useLoad, useMe, useToast } from '../lib';
 
-type Mode = 'folders' | 'projects' | 'tags';
+type Mode = 'list' | 'folders' | 'projects' | 'tags';
 const DRAG = 'application/x-grabit-file';
 
 const MODES: { key: Mode; label: string; icon: string; hint: string }[] = [
+  { key: 'list', label: '全部', icon: 'files', hint: '所有群組、Email 與上傳的檔案，可以依來源、專案、標籤篩選' },
   { key: 'folders', label: '資料夾', icon: 'folder', hint: '雲端硬碟上的實際位置' },
   { key: 'projects', label: '專案', icon: 'layers', hint: '跨群組、跨資料夾的研究專案' },
   { key: 'tags', label: '標籤', icon: 'tag', hint: '一個檔案可以有很多標籤' },
 ];
 
 function readMode(): Mode {
-  if (currentUrl().pathname.startsWith('/labels')) return 'projects';
-  const m = currentUrl().searchParams.get('mode');
-  return m === 'projects' || m === 'tags' ? m : 'folders';
+  const u = currentUrl();
+  if (u.pathname.startsWith('/labels')) return 'projects';
+  if (u.pathname.startsWith('/folders')) return 'folders';
+  if (u.pathname.startsWith('/files')) return 'list';
+  const m = u.searchParams.get('mode');
+  return m === 'projects' || m === 'tags' || m === 'folders' ? m : 'list';
 }
 
 /** 讓元素可以接收拖進來的檔案 */
@@ -65,7 +70,12 @@ export function Library() {
   const refresh = () => setTick((t) => t + 1);
 
   useEffect(() => {
-    const p = currentUrl().searchParams;
+    // 「全部」用 /files（檔案清單自己會把篩選條件寫進網址），其他模式用 /library?mode=
+    if (mode === 'list') {
+      if (!currentUrl().pathname.startsWith('/files')) replaceUrl('/files');
+      return;
+    }
+    const p = currentUrl().pathname.startsWith('/library') ? currentUrl().searchParams : new URLSearchParams();
     p.set('mode', mode);
     replaceUrl(`/library?${p}`);
   }, [mode]);
@@ -74,7 +84,7 @@ export function Library() {
     <div className="library">
       <div className="lib-head">
         <div>
-          <h1>整理</h1>
+          <h1>檔案</h1>
           <p className="muted small">{MODES.find((m) => m.key === mode)!.hint}</p>
         </div>
         <div className="segmented" role="tablist" aria-label="整理方式">
@@ -86,10 +96,15 @@ export function Library() {
           ))}
         </div>
       </div>
+      {mode === 'list' && (
+        <div className="embedded">
+          <Files />
+        </div>
+      )}
       {mode === 'folders' && <FolderMode tick={tick} editable={canEdit(me)} onOpen={setOpenId} refresh={refresh} />}
       {mode === 'projects' && <ProjectMode tick={tick} editable={canEdit(me)} onOpen={setOpenId} refresh={refresh} />}
       {mode === 'tags' && <TagMode tick={tick} editable={canEdit(me)} onOpen={setOpenId} refresh={refresh} />}
-      {openId != null && <FileSheet id={openId} folders={[]} onClose={() => setOpenId(null)} onChanged={refresh} />}
+      {openId != null && mode !== 'list' && <FileSheet id={openId} folders={[]} onClose={() => setOpenId(null)} onChanged={refresh} />}
     </div>
   );
 }

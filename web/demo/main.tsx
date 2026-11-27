@@ -1,5 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { initTheme } from '../src/theme';
+
+initTheme();
 import { App } from '../src/App';
 import { replaceUrl, ToastProvider } from '../src/lib';
 import '../src/styles.css';
