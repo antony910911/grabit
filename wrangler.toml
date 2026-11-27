@@ -2,15 +2,14 @@ name = "grabit"
 main = "src/worker/index.ts"
 compatibility_date = "2025-10-01"
 compatibility_flags = ["nodejs_compat"]
+# 保留在 Cloudflare 後台設定的變數（ACCESS_TEAM_DOMAIN、ACCESS_AUD、ADMIN_EMAILS），部署時不會被清掉
+keep_vars = true
 
 [vars]
 # 日期變數（{yyyy}/{MM}/{dd}）使用的時區
 TIMEZONE = "Asia/Taipei"
-# Cloudflare Access 設定（部署後依 README 填入）
-ACCESS_TEAM_DOMAIN = ""
-ACCESS_AUD = ""
-# 這些 email 第一次登入時自動成為管理員（逗號分隔）；沒設定時第一位登入者成為管理員
-ADMIN_EMAILS = ""
+# Cloudflare Access 與管理員 email 請在 Cloudflare 後台 Worker 的「Variables and Secrets」設定：
+#   ACCESS_TEAM_DOMAIN、ACCESS_AUD、ADMIN_EMAILS（逗號分隔；沒設定時第一位登入者成為管理員）
 # AI 模型（需要 ANTHROPIC_API_KEY）
 AI_MODEL = "claude-opus-5-5"
 
