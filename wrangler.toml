@@ -25,7 +25,7 @@ run_worker_first = ["/api/*", "/webhook", "/oauth/*", "/auth/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "grabit"
-# Cloudflare 後台 Storage & Databases → D1 建立 grabit 資料庫後，把 Database ID 貼到這裡
+# 用「Deploy to Cloudflare」按鈕架設時，這個 ID 會自動換成你自己帳號裡新建的資料庫
 database_id = "365690e0-a926-4160-a81f-84294c0b82b9"
 migrations_dir = "migrations"
 
@@ -34,7 +34,8 @@ migrations_dir = "migrations"
 crons = ["*/5 * * * *"]
 
 # ---------- Cloudflare Queues（背景處理與重試） ----------
-# 沒有 Queues 的帳號（免費方案）可以把下面兩段註解掉，系統會改成直接處理，由上面的排程重試。
+# 免費方案也有 Queues（每天 1 萬次操作，訊息保留 24 小時），GrabIt 一般用量用不完。
+# 不想用 Queues 的話可以把下面兩段註解掉，系統會改成直接處理，由上面的排程重試。
 [[queues.producers]]
 binding = "FILE_QUEUE"
 queue = "grabit-files"

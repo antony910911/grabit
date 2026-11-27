@@ -105,10 +105,22 @@ test/             單元測試與端對端測試
 
 不需要在電腦上安裝任何東西，也不用開終端機。Cloudflare 會從 GitHub 讀取程式碼，自動打包與部署；之後 GitHub 有更新也會自動重新部署。**所有密鑰都在 Cloudflare 後台設定，不會寫進 GitHub。**
 
+### 最簡單：一鍵部署（給新架設的人）
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/antony910911/grabit)
+
+按上面的按鈕，Cloudflare 會把程式碼複製一份到**你自己的** GitHub、在**你自己的** Cloudflare 帳號建立 D1 資料庫與佇列、自動部署（含資料表 migration）。接著照 **[架設說明書](web/public/setup.html)**（部署後在 `你的網址/setup.html` 也看得到）設定 Google、LINE 與密鑰，全程用自己的帳號，有圖文步驟。部署好的網站在還沒設定完成前，登入頁會顯示「第一次設定」清單，列出要貼到 Google、LINE 的網址。
+
+- 按鈕需要這個倉庫是**公開**的（程式碼裡沒有任何密鑰；`wrangler.toml` 的 Database ID 只對擁有者的帳號有效，部署按鈕會換成部署者自己的）。
+- 之後更新：在自己的倉庫 **Actions → 更新 GrabIt 到最新版 → Run workflow**（`.github/workflows/update-grabit.yml`），會換成最新的程式碼，但保留自己的 Worker 名稱、資料庫 ID 與佇列名稱，推上去後 Cloudflare 自動重新部署。
+- 維護者注意：部署按鈕建立的專案固定用 `npm run build`、`npm run deploy`（先套用 D1 migration 再部署），這兩個 script 名稱不要改。
+
+### 手動設定（已經在用的部署照舊）
+
 ### 1. Cloudflare：資料庫、佇列與自動部署
 
 1. [Cloudflare 後台](https://dash.cloudflare.com/) → **Storage & Databases → D1** → Create，名稱 `grabit`。把 Database ID 填進 GitHub 上的 `wrangler.toml`（網頁上按鉛筆圖示編輯）。
-2. **Storage & Databases → Queues** → Create，名稱 `grabit-files`。免費方案沒有 Queues：把 `wrangler.toml` 裡兩段 `[[queues...]]` 註解掉，系統會改成直接處理，失敗的檔案由每 5 分鐘的排程重試。
+2. **Storage & Databases → Queues** → Create，名稱 `grabit-files`（免費方案也有，每天 1 萬次操作）。不想用 Queues 的話，把 `wrangler.toml` 裡兩段 `[[queues...]]` 註解掉，系統會改成直接處理，失敗的檔案由每 5 分鐘的排程重試。
 3. **Workers & Pages → Create → Import a repository**，選這個 GitHub 專案：
    - Worker 名稱：`grabit`
    - Build command：`npm run build:web`
@@ -199,7 +211,7 @@ iCloud Drive 沒有伺服器可用的上傳 API，因此不支援。
 ## 開發與測試（給開發者，一般部署不需要）
 
 ```bash
-cp .dev.vars.example .dev.vars
+cp .dev.vars.sample .dev.vars
 ```
 
 ```bash

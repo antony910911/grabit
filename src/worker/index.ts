@@ -13,7 +13,8 @@ import { FolderCache } from './storage/cache';
 import { GoogleDrive } from './storage/gdrive';
 import { STORAGE_LABEL, type StorageRow, type StorageType } from './storage';
 import { log } from './db';
-import { finishLogin, startLogin } from './auth/google';
+import { finishLogin, loginConfigured, startLogin } from './auth/google';
+import { adminEmails } from './permissions';
 import { clearSessionCookie, readSession, revokeSession, sameOrigin } from './auth/session';
 
 export const app = new Hono<AppEnv>();
@@ -39,6 +40,21 @@ app.post('/auth/logout', async (c) => {
   }
   clearSessionCookie(c);
   return c.json({ ok: true });
+});
+// 第一次架設時的檢查清單（不需要登入）：還沒設定好之前，登入頁會列出要貼到 Google、LINE 的網址。
+// 設定完成後只回傳 ready，不透露任何設定細節。
+app.get('/auth/setup', async (c) => {
+  const google = loginConfigured(c.env);
+  const admins = adminEmails(c.env).length > 0 || !!(await c.env.DB.prepare("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").first());
+  if (google && admins) return c.json({ ready: true });
+  const origin = new URL(c.req.url).origin;
+  return c.json({
+    ready: false,
+    google,
+    admins,
+    line: !!(c.env.LINE_CHANNEL_SECRET && c.env.LINE_CHANNEL_ACCESS_TOKEN),
+    urls: { login: `${origin}/auth/google/callback`, drive: `${origin}/oauth/gdrive/callback`, webhook: `${origin}/webhook` },
+  });
 });
 app.all('/auth/*', (c) => c.json({ error: 'Not found' }, 404));
 

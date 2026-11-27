@@ -7,9 +7,10 @@
   "scripts": {
     "dev": "npm run build:web && wrangler dev",
     "dev:web": "vite --config web/vite.config.ts",
+    "build": "npm run build:web",
     "build:web": "vite build --config web/vite.config.ts",
     "build:demo": "vite build --config web/vite.demo.config.ts && node web/demo/inline.mjs",
-    "deploy": "npm run build:web && wrangler deploy",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
     "deploy:cloudflare": "wrangler d1 migrations apply grabit --remote && wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply grabit --local",
     "db:migrate:remote": "wrangler d1 migrations apply grabit --remote",
@@ -38,5 +39,15 @@
     "vite": "^7.2.0",
     "vitest": "^3.2.4",
     "wrangler": "^4.45.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "GrabIt 的資料庫（檔案清單、規則、成員）。保持預設名稱 `grabit` 就好，會自動建在**你自己的** Cloudflare 帳號。"
+      },
+      "FILE_QUEUE": {
+        "description": "背景處理檔案用的佇列。保持預設名稱就好，免費方案也可以用。"
+      }
+    }
   }
 }

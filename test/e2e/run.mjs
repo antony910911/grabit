@@ -102,6 +102,8 @@ try {
 
   // ---------- Google 登入 ----------
   check('未登入時管理 API 回 401', (await api('/api/me')).status === 401);
+  const setupRes = await api('/auth/setup');
+  check('設定完成後，第一次設定清單只回傳 ready（不透露設定細節）', setupRes.status === 200 && JSON.stringify(setupRes.body) === '{"ready":true}', JSON.stringify(setupRes.body));
   check('未登入時雲端授權路徑被擋下', (await fetch(`${BASE}/oauth/gdrive/start?storage=1`, { redirect: 'manual' })).status === 401);
   check('未登入時上傳被擋下', (await fetch(`${BASE}/api/upload`, { method: 'POST', body: new FormData() })).status === 401);
 
