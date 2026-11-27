@@ -2,15 +2,17 @@ name = "grabit"
 main = "src/worker/index.ts"
 compatibility_date = "2025-10-01"
 compatibility_flags = ["nodejs_compat"]
+# 保留在 Cloudflare 後台設定的變數（ADMIN_EMAILS 等），部署時不會被清掉
+keep_vars = true
 
 [vars]
 # 日期變數（{yyyy}/{MM}/{dd}）使用的時區
 TIMEZONE = "Asia/Taipei"
-# Cloudflare Access 設定（部署後依 README 填入）
-ACCESS_TEAM_DOMAIN = ""
-ACCESS_AUD = ""
-# 這些 email 第一次登入時自動成為管理員（逗號分隔）；沒設定時第一位登入者成為管理員
-ADMIN_EMAILS = ""
+# 以下請在 Cloudflare 後台 Worker 的「Settings → Variables and Secrets」設定，不要寫進 GitHub：
+#   Text  ：ADMIN_EMAILS（可以登入的管理員 Google 帳號，逗號分隔；不在名單也沒被加入成員的人無法登入）
+#           SESSION_TTL_DAYS（登入有效天數，預設 30）、SESSION_IDLE_DAYS（閒置多久要重新登入，預設 7）
+#   Secret：LINE_CHANNEL_SECRET、LINE_CHANNEL_ACCESS_TOKEN、GOOGLE_CLIENT_ID、GOOGLE_CLIENT_SECRET
+#           （選用）ANTHROPIC_API_KEY、MS_CLIENT_ID、MS_CLIENT_SECRET、DROPBOX_APP_KEY、DROPBOX_APP_SECRET
 # AI 模型（需要 ANTHROPIC_API_KEY）
 AI_MODEL = "claude-opus-5-5"
 
@@ -18,15 +20,21 @@ AI_MODEL = "claude-opus-5-5"
 directory = "./web/dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/webhook", "/oauth/*"]
+run_worker_first = ["/api/*", "/webhook", "/oauth/*", "/auth/*"]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "grabit"
-# 執行 `npx wrangler d1 create grabit` 後，把輸出的 database_id 貼到這裡
+# Cloudflare 後台 Storage & Databases → D1 建立 grabit 資料庫後，把 Database ID 貼到這裡
 database_id = "365690e0-a926-4160-a81f-84294c0b82b9"
 migrations_dir = "migrations"
 
+# 每 5 分鐘把失敗或卡住的檔案撿回來重試（免費方案可用）
+[triggers]
+crons = ["*/5 * * * *"]
+
+# ---------- Cloudflare Queues（背景處理與重試） ----------
+# 沒有 Queues 的帳號（免費方案）可以把下面兩段註解掉，系統會改成直接處理，由上面的排程重試。
 [[queues.producers]]
 binding = "FILE_QUEUE"
 queue = "grabit-files"

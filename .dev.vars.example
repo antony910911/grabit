@@ -1,4 +1,4 @@
-# 複製成 .dev.vars 供本機 `wrangler dev` 使用；正式環境請用 `wrangler secret put`
+# 複製成 .dev.vars 供本機 `wrangler dev` 使用；正式環境的密鑰請在 Cloudflare 後台 Variables and Secrets 設定
 LINE_CHANNEL_SECRET=
 LINE_CHANNEL_ACCESS_TOKEN=
 # 雲端空間（用哪個就設定哪個）
@@ -10,5 +10,7 @@ DROPBOX_APP_KEY=
 DROPBOX_APP_SECRET=
 # AI 文件判讀（選用）
 ANTHROPIC_API_KEY=
-# 本機開發時略過登入驗證（正式環境絕對不要設定）
+# 可以登入的管理員 Google 帳號（逗號分隔）
+ADMIN_EMAILS=
+# 本機開發時略過登入（只在 localhost 有效）
 DEV_NO_AUTH=true

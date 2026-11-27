@@ -1,38 +1,43 @@
-// 登入：用 Cloudflare Access 保護整個網站（/webhook 除外），這裡再驗一次 Access 簽發的 JWT，
-// 並依 email 載入成員與權限。
-import { createRemoteJWKSet, jwtVerify } from 'jose';
+// 管理介面驗證：Google 登入建立的 Session（Cookie）＋ 成員名單與角色權限。
+// LINE /webhook 不經過這裡，改用 LINE 簽章驗證。
 import type { MiddlewareHandler } from 'hono';
 import type { AppEnv } from './api/util';
 import { loadUser } from './permissions';
+import { clearSessionCookie, readSession, revokeSession, sameOrigin } from './auth/session';
 
-let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
-let jwksDomain = '';
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
-async function verifiedEmail(env: AppEnv['Bindings'], token: string | undefined): Promise<string | { error: string; status: 401 | 503 }> {
-  if (env.DEV_NO_AUTH === 'true') return 'dev@localhost';
-  const domain = (env.ACCESS_TEAM_DOMAIN || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
-  if (!domain || !env.ACCESS_AUD) {
-    return { error: '管理介面尚未設定登入保護（Cloudflare Access），請參考 README 設定 ACCESS_TEAM_DOMAIN 與 ACCESS_AUD', status: 503 };
-  }
-  if (!token) return { error: '未登入', status: 401 };
-  try {
-    if (!jwks || jwksDomain !== domain) {
-      jwks = createRemoteJWKSet(new URL(`https://${domain}/cdn-cgi/access/certs`));
-      jwksDomain = domain;
-    }
-    const { payload } = await jwtVerify(token, jwks, { issuer: `https://${domain}`, audience: env.ACCESS_AUD });
-    const email = String(payload.email ?? '');
-    return email || { error: '登入資訊缺少 email', status: 401 };
-  } catch {
-    return { error: '登入驗證失敗', status: 401 };
-  }
+/** DEV_NO_AUTH 只在本機（localhost）或展示版有效，就算誤設在正式環境也不會生效 */
+export function devBypass(env: AppEnv['Bindings'], url: string): boolean {
+  if (env.DEV_NO_AUTH !== 'true') return false;
+  return !!env.DEMO_AI || LOCAL_HOSTS.has(new URL(url).hostname);
 }
 
 export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
-  const r = await verifiedEmail(c.env, c.req.header('Cf-Access-Jwt-Assertion'));
-  if (typeof r !== 'string') return c.json({ error: r.error }, r.status);
-  const user = await loadUser(c.env, r);
-  if (!user) return c.json({ error: `${r} 還不是 GrabIt 的成員，請管理員到「成員與權限」加入你的 email` }, 403);
+  if (!sameOrigin(c.req.raw)) return c.json({ error: '請求來源不正確（CSRF 防護）' }, 403);
+
+  if (devBypass(c.env, c.req.url)) {
+    const email = 'dev@localhost';
+    await c.env.DB.prepare("INSERT OR IGNORE INTO users (email, name, role, all_groups) VALUES (?, '本機開發', 'admin', 1)").bind(email).run();
+    const user = await loadUser(c.env, email);
+    c.set('user', user!);
+    c.set('sessionId', null);
+    return next();
+  }
+
+  const session = await readSession(c);
+  if (!session) {
+    clearSessionCookie(c);
+    return c.json({ error: '請先登入', login: true }, 401);
+  }
+  const user = await loadUser(c.env, session.email);
+  if (!user) {
+    // 成員已被移除：撤銷這個 Session
+    await revokeSession(c.env, session.id);
+    clearSessionCookie(c);
+    return c.json({ error: `${session.email} 已不是 GrabIt 成員，請聯絡管理員`, login: true }, 401);
+  }
   c.set('user', user);
+  c.set('sessionId', session.id);
   return next();
 };

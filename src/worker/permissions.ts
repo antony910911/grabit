@@ -32,21 +32,35 @@ export function canSeeGroup(user: CurrentUser, groupId: string): boolean {
   return user.role === 'admin' || user.allGroups || user.groups.includes(groupId);
 }
 
-/** 依 email 載入使用者；第一位登入者或 ADMIN_EMAILS 名單上的人自動成為管理員 */
+/** 管理員名單（環境變數 ADMIN_EMAILS，逗號分隔） */
+export function adminEmails(env: Env): string[] {
+  return (env.ADMIN_EMAILS ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * 依 email 載入使用者。只有兩種人可以登入：
+ * 1. ADMIN_EMAILS 名單上的人（第一次登入時自動建立為管理員，並且一定是管理員，避免被鎖在外面）
+ * 2. 管理員在「成員與權限」加入的成員
+ * 不在名單上的人回傳 null。
+ */
 export async function loadUser(env: Env, email: string): Promise<CurrentUser | null> {
   const lower = email.trim().toLowerCase();
+  if (!lower) return null;
   let row = await env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(lower).first<{ email: string; name: string | null; role: Role; all_groups: number }>();
-  if (!row) {
-    const admins = (env.ADMIN_EMAILS ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-    const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>();
-    if (admins.includes(lower) || !count?.n) {
+  if (adminEmails(env).includes(lower)) {
+    if (!row) {
       await env.DB.prepare("INSERT INTO users (email, role, all_groups) VALUES (?, 'admin', 1)").bind(lower).run();
       row = { email: lower, name: null, role: 'admin', all_groups: 1 };
-    } else {
-      return null;
+    } else if (row.role !== 'admin') {
+      await env.DB.prepare("UPDATE users SET role = 'admin' WHERE email = ?").bind(lower).run();
+      row.role = 'admin';
     }
   }
-  await env.DB.prepare("UPDATE users SET last_seen = datetime('now') WHERE email = ?").bind(lower).run();
+  if (!row) return null;
+  await env.DB.prepare("UPDATE users SET last_seen = datetime('now') WHERE email = ? AND (last_seen IS NULL OR last_seen < datetime('now', '-5 minutes'))").bind(lower).run();
   const groups = (await env.DB.prepare('SELECT group_id FROM user_groups WHERE email = ?').bind(lower).all<{ group_id: string }>()).results.map((g) => g.group_id);
   return { email: lower, name: row.name, role: row.role, allGroups: !!row.all_groups, groups };
 }

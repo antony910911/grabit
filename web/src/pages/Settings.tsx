@@ -18,6 +18,9 @@ interface SettingsResp {
   outgoingWebhookSecretSet: boolean;
   emailAllowedSenders: string;
   oauthRedirects: { type: string; label: string; uri: string; configured: boolean }[];
+  loginConfigured: boolean;
+  loginRedirectUri: string;
+  adminEmails: string[];
 }
 
 function Check({ ok, children, optional }: { ok: boolean; children: ReactNode; optional?: boolean }) {
@@ -77,6 +80,21 @@ export function SettingsPage() {
       {loading && !s && <Loading />}
       {s && (
         <div className="stack">
+          <section className="card card-pad">
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <h2>Google 帳號登入</h2>
+              {s.loginConfigured ? <span className="badge ok">已啟用</span> : <span className="badge warn">待設定</span>}
+            </div>
+            <p className="muted small">
+              成員用 Google 帳號登入 GrabIt。Google Cloud 的 OAuth 用戶端「已授權的重新導向 URI」要同時包含下面兩個網址（登入與 Google Drive 授權是分開的）：
+            </p>
+            <Copy text={s.loginRedirectUri} />
+            {s.oauthRedirects.find((o) => o.type === 'gdrive') && <Copy text={s.oauthRedirects.find((o) => o.type === 'gdrive')!.uri} />}
+            <p className="muted small" style={{ marginBottom: 0 }}>
+              管理員名單（ADMIN_EMAILS）：{s.adminEmails.length ? s.adminEmails.join('、') : '未設定'}。其他人要先由管理員在 <Link to="/users">成員與權限</Link> 加入才能登入。
+            </p>
+          </section>
+
           <section className="card card-pad">
             <h2>LINE 連線</h2>
             <p className="muted small">把下面的網址貼到 LINE Developers → Messaging API → Webhook URL，並開啟「Use webhook」。一個 Bot 可以加入多個群組。</p>
@@ -138,7 +156,9 @@ export function SettingsPage() {
             <h2>設定檢查</h2>
             <ul className="list" style={{ marginTop: 8 }}>
               <Check ok={s.lineConfigured}>LINE Channel secret 與 access token</Check>
-              <Check ok={s.queueEnabled}>Cloudflare Queue（處理失敗時自動重試）</Check>
+              <Check ok={s.queueEnabled} optional>
+                Cloudflare Queues（付費方案；沒有時每 5 分鐘自動重試失敗的檔案）
+              </Check>
               <Check ok={s.aiKeyConfigured} optional>
                 AI（ANTHROPIC_API_KEY）
               </Check>

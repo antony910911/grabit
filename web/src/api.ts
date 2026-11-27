@@ -20,11 +20,24 @@ export async function api<T = unknown>(path: string, init: RequestInit & { json?
   try {
     data = text ? JSON.parse(text) : null;
   } catch {
-    // Cloudflare Access 登入過期時會回傳 HTML 登入頁
-    throw new ApiError('登入已過期，請重新整理頁面', 401);
+    throw new ApiError(`伺服器回應格式錯誤（HTTP ${res.status}）`, res.status || 500);
   }
-  if (!res.ok) throw new ApiError((data as { error?: string } | null)?.error ?? `HTTP ${res.status}`, res.status);
+  if (!res.ok) {
+    const err = new ApiError((data as { error?: string } | null)?.error ?? `HTTP ${res.status}`, res.status);
+    // 登入過期或被登出：通知 App 顯示登入頁
+    if (res.status === 401 && path !== '/me') window.dispatchEvent(new CustomEvent('grabit-login-required', { detail: err.message }));
+    throw err;
+  }
   return data as T;
+}
+
+export async function logout(all = false): Promise<void> {
+  try {
+    if (all) await api('/me/logout-all', { method: 'POST', json: {} });
+    await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' });
+  } finally {
+    location.href = '/login';
+  }
 }
 
 export type Role = 'admin' | 'editor' | 'viewer';
@@ -190,4 +203,5 @@ export interface User {
   all_groups: number;
   groups: string[];
   last_seen: string | null;
+  active_sessions: number;
 }

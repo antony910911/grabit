@@ -24,9 +24,12 @@ export interface Env {
   AI_MODEL?: string;
 
   TIMEZONE?: string;
-  ACCESS_TEAM_DOMAIN?: string;
-  ACCESS_AUD?: string;
+  /** 可以登入並自動成為管理員的 email（逗號分隔） */
   ADMIN_EMAILS?: string;
+  /** Session 絕對有效天數（預設 30）與閒置逾時天數（預設 7） */
+  SESSION_TTL_DAYS?: string;
+  SESSION_IDLE_DAYS?: string;
+  /** 只在本機開發／展示版生效：略過登入 */
   DEV_NO_AUTH?: string;
 
   // 展示版注入的模擬 AI

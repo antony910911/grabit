@@ -1,6 +1,34 @@
 // 端對端測試用：包住正式的 worker，把 LINE 與 Google 的 API 換成記憶體中的假服務。
 // 用法：npx wrangler dev -c test/e2e/wrangler.e2e.toml
 import worker from '../../src/worker/index';
+import { exportJWK, generateKeyPair, SignJWT } from 'jose';
+
+// 假的 Google 登入伺服器：用自己產生的 RSA 金鑰簽 ID Token，並提供對應的 JWKS
+let keys: { privateKey: CryptoKey; jwk: Record<string, unknown> } | null = null;
+let attackerKey: CryptoKey | null = null;
+async function googleKeys() {
+  if (!keys) {
+    const k = await generateKeyPair('RS256', { extractable: true });
+    keys = { privateKey: k.privateKey as CryptoKey, jwk: { ...(await exportJWK(k.publicKey)), kid: 'test-key', alg: 'RS256', use: 'sig' } };
+    attackerKey = (await generateKeyPair('RS256')).privateKey as CryptoKey;
+  }
+  return keys;
+}
+
+/** 測試用的授權碼格式：login|email|nonce|email_verified|aud|iss|signer|expired */
+async function googleIdToken(code: string): Promise<string> {
+  const [, email, nonce, verified, aud, iss, signer, expired] = code.split('|');
+  const k = await googleKeys();
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({ email, email_verified: verified === 'true', nonce, name: '測試使用者' })
+    .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
+    .setIssuer(iss || 'https://accounts.google.com')
+    .setAudience(aud || 'x')
+    .setSubject(`sub-${email}`)
+    .setIssuedAt(expired === '1' ? now - 7200 : now)
+    .setExpirationTime(expired === '1' ? now - 3600 : now + 3600)
+    .sign(signer === 'attacker' ? attackerKey! : k.privateKey);
+}
 
 type DriveFile = { id: string; name: string; parents: string[]; folder: boolean; trashed: boolean; md5?: string; size?: number };
 const files = new Map<string, DriveFile>();
@@ -39,7 +67,16 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     const bytes = new TextEncoder().encode(body);
     return new Response(bytes, { headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(bytes.length) } });
   }
-  if (host === 'oauth2.googleapis.com') return json({ access_token: 'fake', expires_in: 3600 });
+  if (host === 'oauth2.googleapis.com') {
+    const form = new URLSearchParams(await req.text());
+    const code = form.get('code') ?? '';
+    if (code.startsWith('login|')) {
+      if (!form.get('code_verifier') || form.get('client_secret') !== 'x') return json({ error: 'invalid_grant' }, 400);
+      return json({ access_token: 'fake', expires_in: 3600, id_token: await googleIdToken(code) });
+    }
+    return json({ access_token: 'fake', expires_in: 3600 });
+  }
+  if (host === 'www.googleapis.com' && p === '/oauth2/v3/certs') return json({ keys: [(await googleKeys()).jwk] });
   if (host === 'fake-upload.test') {
     const meta = uploads.get(p)!;
     const buf = await req.arrayBuffer();
@@ -104,4 +141,5 @@ export default {
     return worker.fetch(req, env, ctx);
   },
   queue: worker.queue,
+  scheduled: worker.scheduled,
 };

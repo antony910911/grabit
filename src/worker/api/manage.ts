@@ -8,6 +8,8 @@ import { hasFts, searchForAi } from '../search';
 import { STORAGE_LABEL, storageReady, type StorageRow, type StorageType } from '../storage';
 import { oauthConfigured } from '../storage/oauth';
 import { FolderCache } from '../storage/cache';
+import { revokeAllSessions } from '../auth/session';
+import { loginConfigured, LOGIN_CALLBACK_PATH } from '../auth/google';
 import { bad, intParam, need, notFound, readJson, type AppEnv, type Ctx } from './util';
 
 export const manage = new Hono<AppEnv>();
@@ -26,6 +28,36 @@ manage.get('/me', async (c) => {
     semantic: !!(c.env.AI && c.env.VECTORIZE),
     demo: !!c.env.DEMO_AI,
   });
+});
+
+/** 我目前登入中的裝置 */
+manage.get('/me/sessions', async (c) => {
+  const u = c.get('user');
+  const r = await c.env.DB.prepare(
+    "SELECT id, created_at, last_seen, expires_at, user_agent FROM sessions WHERE email = ? AND revoked_at IS NULL AND expires_at > datetime('now') ORDER BY last_seen DESC",
+  )
+    .bind(u.email)
+    .all<{ id: string; created_at: string; last_seen: string; expires_at: string; user_agent: string | null }>();
+  const current = c.get('sessionId');
+  return c.json({ items: r.results.map((s) => ({ ...s, id: s.id.slice(0, 12), current: s.id === current })) });
+});
+
+/** 登出所有裝置（包含目前這台） */
+manage.post('/me/logout-all', async (c) => {
+  const u = c.get('user');
+  const n = await revokeAllSessions(c.env, u.email);
+  await log(c.env, 'info', 'login', `${u.email} 登出所有裝置（${n} 個登入）`);
+  return c.json({ revoked: n });
+});
+
+/** 登出其他裝置（保留目前這台） */
+manage.post('/me/logout-others', async (c) => {
+  const u = c.get('user');
+  const current = c.get('sessionId');
+  const r = await c.env.DB.prepare("UPDATE sessions SET revoked_at = datetime('now') WHERE email = ? AND revoked_at IS NULL AND id != ?")
+    .bind(u.email, current ?? '')
+    .run();
+  return c.json({ revoked: r.meta.changes ?? 0 });
 });
 
 manage.get('/stats', async (c) => {
@@ -486,7 +518,9 @@ manage.delete('/storages/:id', async (c) => {
 manage.get('/users', async (c) => {
   need(c, 'admin');
   const r = await c.env.DB.prepare(
-    "SELECT u.*, (SELECT json_group_array(group_id) FROM user_groups ug WHERE ug.email = u.email) AS groups_json FROM users u ORDER BY u.role = 'admin' DESC, u.email",
+    `SELECT u.*, (SELECT json_group_array(group_id) FROM user_groups ug WHERE ug.email = u.email) AS groups_json,
+       (SELECT COUNT(*) FROM sessions s WHERE s.email = u.email AND s.revoked_at IS NULL AND s.expires_at > datetime('now')) AS active_sessions
+     FROM users u ORDER BY u.role = 'admin' DESC, u.email`,
   ).all<{ groups_json: string }>();
   return c.json({ items: r.results.map(({ groups_json, ...u }) => ({ ...u, groups: JSON.parse(groups_json) })) });
 });
@@ -541,7 +575,18 @@ manage.delete('/users/:email', async (c) => {
   const email = decodeURIComponent(c.req.param('email')).toLowerCase();
   if (email === me.email) throw bad('不能刪除自己');
   await c.env.DB.batch([c.env.DB.prepare('DELETE FROM user_groups WHERE email = ?').bind(email), c.env.DB.prepare('DELETE FROM users WHERE email = ?').bind(email)]);
+  const n = await revokeAllSessions(c.env, email);
+  await log(c.env, 'info', 'user', `${me.email} 移除成員 ${email}（撤銷 ${n} 個登入）`);
   return c.json({ ok: true });
+});
+
+/** 管理員強制登出某位成員的所有裝置 */
+manage.post('/users/:email/revoke-sessions', async (c) => {
+  const me = need(c, 'admin');
+  const email = decodeURIComponent(c.req.param('email')).toLowerCase();
+  const n = await revokeAllSessions(c.env, email);
+  await log(c.env, 'info', 'user', `${me.email} 強制登出 ${email}（${n} 個登入）`);
+  return c.json({ revoked: n });
 });
 
 // ---------- 系統設定 ----------
@@ -563,6 +608,9 @@ manage.get('/settings', async (c) => {
     outgoingWebhook: (await getSetting(c.env, 'webhook_url')) ?? '',
     outgoingWebhookSecretSet: !!(await getSetting(c.env, 'webhook_secret')),
     emailAllowedSenders: (await getSetting(c.env, 'email_allowed_senders')) ?? '',
+    loginConfigured: loginConfigured(c.env),
+    loginRedirectUri: `${origin}${LOGIN_CALLBACK_PATH}`,
+    adminEmails: (c.env.ADMIN_EMAILS ?? '').split(',').map((x) => x.trim()).filter(Boolean),
     oauthRedirects: (['gdrive', 'onedrive', 'dropbox'] as const).map((t) => ({ type: t, label: STORAGE_LABEL[t], uri: `${origin}/oauth/${t}/callback`, configured: oauthConfigured(c.env, t) })),
   });
 });
