@@ -1,0 +1,7 @@
+# 複製成 .dev.vars 供本機 `wrangler dev` 使用；正式環境請用 `wrangler secret put`
+LINE_CHANNEL_SECRET=
+LINE_CHANNEL_ACCESS_TOKEN=
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+# 本機開發時略過登入驗證（正式環境絕對不要設定）
+DEV_NO_AUTH=true
