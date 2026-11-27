@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { api, logout, type Me, type Role } from '../api';
 import { useToast } from '../lib';
-import { applyTheme, PALETTES, type Palette, type ThemeMode, type ThemePrefs } from '../theme';
+import { applyTheme, FONT_SIZES, PALETTES, type Palette, type ThemeMode, type ThemePrefs } from '../theme';
 
 const ROLE_LABEL: Record<Role, string> = { admin: '管理員', editor: '編輯者', viewer: '檢視者' };
 
@@ -102,6 +102,20 @@ export function Account({ me, onPrefs }: { me: Me | null; onPrefs: (p: ThemePref
               </button>
             ))}
           </div>
+          <div className="small" style={{ fontWeight: 600, margin: '16px 0 8px' }}>
+            字體大小
+          </div>
+          <div className="segmented font-sizes" role="radiogroup" aria-label="字體大小">
+            {FONT_SIZES.map((f) => (
+              <button key={f.key} role="radio" aria-checked={(prefs.fontSize ?? 'md') === f.key} className={(prefs.fontSize ?? 'md') === f.key ? 'on' : ''} onClick={() => save({ fontSize: f.key })}>
+                <span style={{ fontSize: `${Math.round(14 * f.scale)}px`, fontWeight: 700 }}>字</span>
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <p className="muted small" style={{ margin: '6px 0 0' }}>
+            整個 GrabIt 的文字一起放大或縮小，版面不變。也可以用瀏覽器的縮放（Ctrl／⌘ 加減號）。
+          </p>
           <div className="small" style={{ fontWeight: 600, margin: '16px 0 8px' }}>
             主題色
           </div>

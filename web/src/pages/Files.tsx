@@ -68,68 +68,87 @@ function readPref(key: string, d: boolean): boolean {
   }
 }
 
-/** 上傳者清單：可以搜尋、釘選，依看得到的檔案數排序；同名的人會顯示來源與 ID 尾碼區分 */
-function UploaderSection({ data, active, pick, onPin }: { data: UploaderList | null; active: string; pick: (key: string) => void; onPin: (u: Uploader) => void }) {
-  const [open, setOpen] = useState(() => readPref('grabit-uploaders-open', true));
+/**
+ * 可以收合的篩選區塊：項目多的時候先顯示前幾個，可以搜尋或「顯示全部」。
+ * 收合時，如果有選中的項目還是會顯示它，才知道目前套用了什麼。收合狀態記在這台裝置。
+ */
+function FilterSection<T>({
+  id,
+  title,
+  items,
+  keyOf,
+  isActive,
+  render,
+  text,
+  limit = 6,
+  footer,
+  pinned,
+}: {
+  id: string;
+  title: string;
+  items: T[];
+  keyOf: (t: T) => string;
+  isActive: (t: T) => boolean;
+  render: (t: T) => ReactNode;
+  text: (t: T) => string;
+  limit?: number;
+  footer?: ReactNode;
+  /** 一定排在前面、不受數量限制的項目（例如釘選的上傳者） */
+  pinned?: (t: T) => boolean;
+}) {
+  const storeKey = `grabit-src-open-${id}`;
+  const [open, setOpen] = useState(() => readPref(storeKey, true));
   const [q, setQ] = useState('');
   const [all, setAll] = useState(false);
-  if (!data || (!data.items.length && !data.unknown)) return null;
+  if (!items.length && !footer) return null;
   const toggle = () => {
     setOpen(!open);
     try {
-      localStorage.setItem('grabit-uploaders-open', open ? '0' : '1');
+      localStorage.setItem(storeKey, open ? '0' : '1');
     } catch {
       // 隱私模式
     }
   };
-  const names = new Map<string, number>();
-  for (const u of data.items) names.set(u.name, (names.get(u.name) ?? 0) + 1);
   const kw = q.trim().toLowerCase();
-  const list = data.items.filter((u) => !kw || u.name.toLowerCase().includes(kw) || (u.display_name ?? '').toLowerCase().includes(kw));
-  const LIMIT = 8;
-  const shown = kw || all ? list : list.slice(0, Math.max(LIMIT, data.items.filter((u) => u.pinned).length));
+  const matched = kw ? items.filter((t) => text(t).toLowerCase().includes(kw)) : items;
+  const keep = Math.max(limit, pinned ? items.filter(pinned).length : 0);
+  let shown = kw || all ? matched : matched.slice(0, keep);
+  // 選中的項目就算排在後面也要看得到
+  const active = items.filter(isActive);
+  for (const t of active) if (!shown.includes(t)) shown = [...shown, t];
   return (
-    <>
+    <div className="src-section">
       <button className="src-head" onClick={toggle} aria-expanded={open}>
-        <h4>上傳者</h4>
+        <h4>
+          {title}
+          {!open && active.length > 0 && <span className="src-dot" aria-label="有套用篩選" />}
+        </h4>
+        <span className="src-head-n">{items.length || ''}</span>
         <Icon name={open ? 'up' : 'down'} />
       </button>
-      {open && (
+      {open ? (
         <>
-          {data.items.length > LIMIT && <input className="input src-search" type="search" placeholder="搜尋上傳者" value={q} onChange={(e) => setQ(e.target.value)} aria-label="搜尋上傳者" />}
-          {shown.map((u) => (
-            <div key={u.key} className={`src src-row ${active === u.key ? 'active' : ''}`}>
-              <button className="src-main" onClick={() => pick(active === u.key ? '' : u.key)}>
-                <span className="src-name">
-                  {u.name}
-                  {(names.get(u.name) ?? 0) > 1 && (
-                    <small>
-                      {SOURCE_LABEL[u.source] ?? u.source}・…{u.key.slice(-4)}
-                    </small>
-                  )}
-                </span>
-              </button>
-              <button className={`src-pin ${u.pinned ? 'on' : ''}`} onClick={() => onPin(u)} aria-label={u.pinned ? `取消釘選 ${u.name}` : `釘選 ${u.name}`} title={u.pinned ? '取消釘選' : '釘選到最上面'}>
-                {u.pinned ? '★' : '☆'}
-              </button>
-              <span className="n">{u.count}</span>
-            </div>
+          {items.length > limit + 2 && <input className="input src-search" type="search" placeholder={`搜尋${title}`} value={q} onChange={(e) => setQ(e.target.value)} aria-label={`搜尋${title}`} />}
+          {shown.map((t) => (
+            <div key={keyOf(t)}>{render(t)}</div>
           ))}
-          {!kw && list.length > shown.length && (
+          {!kw && matched.length > shown.length && (
             <button className="src src-more" onClick={() => setAll(true)}>
-              顯示全部 {list.length} 位
+              顯示全部 {matched.length} 個
             </button>
           )}
-          {kw && !list.length && <div className="muted small" style={{ padding: '4px 10px' }}>找不到符合的上傳者</div>}
-          {!kw && data.unknown > 0 && (
-            <button className={`src ${active === 'unknown' ? 'active' : ''}`} onClick={() => pick(active === 'unknown' ? '' : 'unknown')}>
-              <span className="muted">未知上傳者</span>
-              <span className="n">{data.unknown}</span>
+          {all && !kw && matched.length > keep && (
+            <button className="src src-more" onClick={() => setAll(false)}>
+              只顯示前 {keep} 個
             </button>
           )}
+          {kw && !matched.length && <div className="muted small" style={{ padding: '4px 10px' }}>找不到符合的{title}</div>}
+          {!kw && footer}
         </>
+      ) : (
+        active.map((t) => <div key={keyOf(t)}>{render(t)}</div>)
       )}
-    </>
+    </div>
   );
 }
 
@@ -149,40 +168,102 @@ export function SourcePanel({
   onPin: (u: Uploader) => void;
 }) {
   if (!sources) return <Loading />;
-  const item = (active: boolean, onClick: () => void, label: ReactNode, n: number, key: string) => (
-    <button key={key} className={`src ${active ? 'active' : ''}`} onClick={onClick}>
+  const item = (active: boolean, onClick: () => void, label: ReactNode, n: number) => (
+    <button className={`src ${active ? 'active' : ''}`} onClick={onClick}>
       {label}
       <span className="n">{n}</span>
     </button>
   );
   // 各個篩選條件可以疊加，從上方的標記單獨清除
   const none = !filters.group && !filters.project && !filters.tag && !filters.year && !filters.uploader;
+  const ups = uploaders?.items ?? [];
+  const names = new Map<string, number>();
+  for (const u of ups) names.set(u.name, (names.get(u.name) ?? 0) + 1);
+  const tags = sources.tags.filter((t) => (t.count ?? 0) > 0);
   return (
     <>
-      <h4>檔案來源</h4>
-      {item(none, () => set({ group: '', project: '', tag: '', year: '', uploader: '' }), '全部檔案', total, 'all')}
-      {sources.groups.map((g) =>
-        item(
-          filters.group === g.id,
-          () => set({ group: filters.group === g.id ? '' : g.id }),
-          <>
-            <SourceIcon type={g.source_type} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.name || '（未命名）'}</span>
-          </>,
-          g.count,
-          g.id,
-        ),
+      {item(none, () => set({ group: '', project: '', tag: '', year: '', uploader: '' }), <strong>全部檔案</strong>, total)}
+      <FilterSection
+        id="groups"
+        title="群組"
+        items={sources.groups}
+        keyOf={(g) => g.id}
+        isActive={(g) => filters.group === g.id}
+        text={(g) => g.name ?? ''}
+        render={(g) =>
+          item(
+            filters.group === g.id,
+            () => set({ group: filters.group === g.id ? '' : g.id }),
+            <>
+              <SourceIcon type={g.source_type} />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.name || '（未命名）'}</span>
+            </>,
+            g.count,
+          )
+        }
+      />
+      <FilterSection
+        id="uploaders"
+        title="上傳者"
+        items={ups}
+        keyOf={(u) => u.key}
+        isActive={(u) => filters.uploader === u.key}
+        text={(u) => `${u.name} ${u.display_name ?? ''}`}
+        pinned={(u) => u.pinned}
+        render={(u) => (
+          <div className={`src src-row ${filters.uploader === u.key ? 'active' : ''}`}>
+            <button className="src-main" onClick={() => set({ uploader: filters.uploader === u.key ? '' : u.key })}>
+              <span className="src-name">
+                {u.name}
+                {(names.get(u.name) ?? 0) > 1 && (
+                  <small>
+                    {SOURCE_LABEL[u.source] ?? u.source}・…{u.key.slice(-4)}
+                  </small>
+                )}
+              </span>
+            </button>
+            <button className={`src-pin ${u.pinned ? 'on' : ''}`} onClick={() => onPin(u)} aria-label={u.pinned ? `取消釘選 ${u.name}` : `釘選 ${u.name}`} title={u.pinned ? '取消釘選' : '釘選到最上面'}>
+              {u.pinned ? '★' : '☆'}
+            </button>
+            <span className="n">{u.count}</span>
+          </div>
+        )}
+        footer={
+          (uploaders?.unknown ?? 0) > 0
+            ? item(filters.uploader === 'unknown', () => set({ uploader: filters.uploader === 'unknown' ? '' : 'unknown' }), <span className="muted">未知上傳者</span>, uploaders!.unknown)
+            : undefined
+        }
+      />
+      <FilterSection
+        id="projects"
+        title="專案"
+        items={sources.projects}
+        keyOf={(p) => `p${p.id}`}
+        isActive={(p) => filters.project === String(p.id)}
+        text={(p) => p.name}
+        render={(p) => item(filters.project === String(p.id), () => set({ project: filters.project === String(p.id) ? '' : String(p.id) }), <ProjectBadge name={p.name} color={p.color} />, p.count)}
+      />
+      <FilterSection
+        id="tags"
+        title="標籤"
+        items={tags}
+        keyOf={(t) => `t${t.id}`}
+        isActive={(t) => filters.tag === String(t.id)}
+        text={(t) => t.name}
+        limit={8}
+        render={(t) => item(filters.tag === String(t.id), () => set({ tag: filters.tag === String(t.id) ? '' : String(t.id) }), `# ${t.name}`, t.count ?? 0)}
+      />
+      {sources.years.length > 1 && (
+        <FilterSection
+          id="years"
+          title="年度"
+          items={sources.years}
+          keyOf={(y) => `y${y.year}`}
+          isActive={(y) => filters.year === y.year}
+          text={(y) => y.year}
+          render={(y) => item(filters.year === y.year, () => set({ year: filters.year === y.year ? '' : y.year }), `${y.year} 年`, y.count)}
+        />
       )}
-      <UploaderSection data={uploaders} active={filters.uploader} pick={(key) => set({ uploader: key })} onPin={onPin} />
-      {sources.projects.length > 0 && <h4>專案</h4>}
-      {sources.projects.map((p) => item(filters.project === String(p.id), () => set({ project: filters.project === String(p.id) ? '' : String(p.id) }), <ProjectBadge name={p.name} color={p.color} />, p.count, `p${p.id}`))}
-      {sources.tags.length > 0 && <h4>標籤</h4>}
-      {sources.tags
-        .filter((t) => (t.count ?? 0) > 0)
-        .slice(0, 20)
-        .map((t) => item(filters.tag === String(t.id), () => set({ tag: filters.tag === String(t.id) ? '' : String(t.id) }), `# ${t.name}`, t.count ?? 0, `t${t.id}`))}
-      {sources.years.length > 1 && <h4>年度</h4>}
-      {sources.years.length > 1 && sources.years.map((y) => item(filters.year === y.year, () => set({ year: filters.year === y.year ? '' : y.year }), `${y.year} 年`, y.count, `y${y.year}`))}
     </>
   );
 }

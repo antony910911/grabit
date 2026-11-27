@@ -493,14 +493,14 @@ try {
   check('檢視者不能看或改系統設定', (await api('/api/settings')).status === 403 && (await api('/api/settings', { method: 'PUT', body: '{"ai_enabled":"0"}' })).status === 403);
   const vst = (await api('/api/storages')).body;
   check('檢視者只看得到雲端空間名稱（沒有帳號與分享細節）', vst.items.length > 0 && vst.items.every((s) => !('account' in s) && !('config' in s) && !('folderLink' in s) && !('share' in s)) && vst.types.length === 0, JSON.stringify(vst));
-  r = await api('/api/me/prefs', { method: 'PUT', body: JSON.stringify({ mode: 'dark', palette: 'forest' }) });
-  check('每個人都可以改自己的外觀', r.status === 200 && r.body.mode === 'dark' && r.body.palette === 'forest', JSON.stringify(r.body));
-  r = await api('/api/me/prefs', { method: 'PUT', body: JSON.stringify({ palette: 'hacker<script>' }) });
+  r = await api('/api/me/prefs', { method: 'PUT', body: JSON.stringify({ mode: 'dark', palette: 'forest', fontSize: 'xl' }) });
+  check('每個人都可以改自己的外觀與字體大小', r.status === 200 && r.body.mode === 'dark' && r.body.palette === 'forest' && r.body.fontSize === 'xl', JSON.stringify(r.body));
+  r = await api('/api/me/prefs', { method: 'PUT', body: JSON.stringify({ palette: 'hacker<script>', fontSize: '200px' }) });
   const vme = (await api('/api/me')).body;
-  check('外觀設定會保存，不合法的值被忽略', vme.prefs?.mode === 'dark' && vme.prefs.palette === 'forest', JSON.stringify(vme.prefs));
+  check('外觀設定會保存，不合法的值被忽略', vme.prefs?.mode === 'dark' && vme.prefs.palette === 'forest' && vme.prefs.fontSize === 'xl', JSON.stringify(vme.prefs));
   const E = await login('editor@example.com');
   COOKIE = pair(E.session);
-  check('外觀設定是每個人自己的', (await api('/api/me')).body.prefs?.palette === 'indigo');
+  check('外觀設定是每個人自己的', (await api('/api/me')).body.prefs?.palette === 'indigo' && (await api('/api/me')).body.prefs?.fontSize === 'md');
   check('編輯者只看得到被授權的群組', (await api('/api/files')).body.items.every((f) => f.group_id === 'Cgroup1') && (await api('/api/files')).body.items.length > 0);
   // 上傳者清單與數量只算看得到的檔案
   const eUps = (await api('/api/uploaders')).body;
