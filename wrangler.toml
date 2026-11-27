@@ -1,0 +1,51 @@
+name = "grabit"
+main = "src/worker/index.ts"
+compatibility_date = "2025-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# 日期變數（{yyyy}/{MM}/{dd}）使用的時區
+TIMEZONE = "Asia/Taipei"
+# Cloudflare Access 設定（部署後依 README 填入）
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""
+# 這些 email 第一次登入時自動成為管理員（逗號分隔）；沒設定時第一位登入者成為管理員
+ADMIN_EMAILS = ""
+# AI 模型（需要 ANTHROPIC_API_KEY）
+AI_MODEL = "claude-opus-5-5"
+
+[assets]
+directory = "./web/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/webhook", "/oauth/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "grabit"
+# 執行 `npx wrangler d1 create grabit` 後，把輸出的 database_id 貼到這裡
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[queues.producers]]
+binding = "FILE_QUEUE"
+queue = "grabit-files"
+
+[[queues.consumers]]
+queue = "grabit-files"
+max_batch_size = 5
+max_batch_timeout = 5
+max_retries = 6
+# 一次只跑一個 consumer，避免同時建立重複的雲端資料夾
+max_concurrency = 1
+
+[observability]
+enabled = true
+
+# ---------- 選用：語意搜尋（Workers AI + Vectorize） ----------
+# npx wrangler vectorize create grabit-files --dimensions=1024 --metric=cosine
+# [ai]
+# binding = "AI"
+# [[vectorize]]
+# binding = "VECTORIZE"
+# index_name = "grabit-files"
