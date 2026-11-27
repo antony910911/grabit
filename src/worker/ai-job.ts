@@ -3,7 +3,7 @@
 // AI 關閉、額度用完、模型失敗都不影響收檔。免費額度用完就暫停到重置時間，不會改用付費模型。
 import type { Env, WaitUntil } from './env';
 import { addTags, getFile, getGroup, getSetting, groupDisplayName, log, projectIdByName, setSetting, deleteSetting, type FileRow, type GroupRow } from './db';
-import { AI_MAX_BYTES, AiQuotaError, AiTransientError, createEngine, nextPacificMidnight, nextUtcMidnight, workersRate, WORKERS_MAX_OUTPUT, WORKERS_TEXT_LIMIT, DEFAULT_GEMINI_MODEL, DEFAULT_WORKERS_MODEL, type AiEngine, type AiProvider, type ContentRead } from './ai';
+import { AI_MAX_BYTES, AiQuotaError, AiTransientError, createEngine, nextPacificMidnight, nextUtcMidnight, workersRate, WORKERS_ASK_LIMITS, WORKERS_MAX_OUTPUT, WORKERS_TEXT_LIMIT, DEFAULT_GEMINI_MODEL, DEFAULT_WORKERS_MODEL, type AiEngine, type AiProvider, type ContentRead } from './ai';
 import { validateAnalysis, type Analysis } from './ai-schema';
 import { extractContent } from './extract';
 import { renderPath, templateVars } from './rules';
@@ -91,6 +91,12 @@ export function engineFor(env: Env, s: AiSettings): AiEngine | null {
   return createEngine(env, s.provider, { workers: s.workersModel, gemini: s.geminiModel });
 }
 
+/** 「問 AI」跟著 AI 文件判讀選的引擎（Workers AI、Gemini 都是免費的；Claude 付費） */
+export function askEngineFor(env: Env, s: AiSettings): AiEngine | null {
+  const e = engineFor(env, s);
+  return e?.ask ? e : null;
+}
+
 /** 這個引擎會把內容送到 GrabIt 以外、而且可能拿來改善產品的服務 */
 export const isExternal = (p: AiProvider | ProviderSetting) => p === 'gemini';
 
@@ -107,10 +113,16 @@ export function resetAt(provider: string, now = new Date()): Date {
 }
 
 /** 預估一次分析最多用掉多少額度單位（Workers AI 是 Neurons；其他服務只算件數，單位是 token 僅供參考） */
-export function estimateUnits(provider: string, model: string): number {
+export function estimateUnits(provider: string, model: string, kind: 'analyze' | 'ask' = 'analyze'): number {
   if (provider !== 'workers') return 0;
   const r = workersRate(model);
   // 中文約 1.3 token／字；加上提示詞、既有資料夾與標籤清單
+  if (kind === 'ask') {
+    // 兩次呼叫：拆搜尋條件（短）＋依檔案回答（檔案清單、摘要與摘錄）
+    const L = WORKERS_ASK_LIMITS;
+    const inputTokens = Math.ceil((600 + L.maxFiles * 260 + L.withText * L.excerpt + 800) * 1.3);
+    return (inputTokens * r.in + (300 + 700) * r.out) / 1e6;
+  }
   const inputTokens = Math.ceil((WORKERS_TEXT_LIMIT + 3000) * 1.3);
   return (inputTokens * r.in + WORKERS_MAX_OUTPUT * r.out) / 1e6;
 }
@@ -122,9 +134,9 @@ export function actualUnits(provider: string, model: string, usage: { input: num
 
 export type Reservation = { ok: true; day: string; units: number } | { ok: false; why: 'count' | 'budget' };
 
-export async function reserveUsage(env: Env, provider: string, model: string, s: AiSettings, now = new Date()): Promise<Reservation> {
+export async function reserveUsage(env: Env, provider: string, model: string, s: AiSettings, now = new Date(), kind: 'analyze' | 'ask' = 'analyze'): Promise<Reservation> {
   const day = usageDay(provider, now);
-  const units = estimateUnits(provider, model);
+  const units = estimateUnits(provider, model, kind);
   const budget = provider === 'workers' ? s.neuronBudget : Number.MAX_SAFE_INTEGER;
   await env.DB.prepare('INSERT OR IGNORE INTO ai_usage (day, provider) VALUES (?, ?)').bind(day, provider).run();
   const r = await env.DB.prepare('UPDATE ai_usage SET count = count + 1, units = units + ? WHERE day = ? AND provider = ? AND count < ? AND units + ? <= ?')
@@ -136,13 +148,13 @@ export async function reserveUsage(env: Env, provider: string, model: string, s:
 }
 
 /** 用模型回報的實際用量取代預估；沒有回報時保留預估 */
-async function settleUsage(env: Env, provider: string, res: { day: string; units: number }, actual: number | null): Promise<void> {
+export async function settleUsage(env: Env, provider: string, res: { day: string; units: number }, actual: number | null): Promise<void> {
   if (actual == null) return;
   await env.DB.prepare('UPDATE ai_usage SET units = MAX(0, units - ? + ?) WHERE day = ? AND provider = ?').bind(res.units, actual, res.day, provider).run();
 }
 
 /** 沒有真的用到（額度不足、暫時錯誤）時退回預留 */
-async function refundUsage(env: Env, provider: string, res: { day: string; units: number }): Promise<void> {
+export async function refundUsage(env: Env, provider: string, res: { day: string; units: number }): Promise<void> {
   await env.DB.prepare('UPDATE ai_usage SET count = MAX(0, count - 1), units = MAX(0, units - ?) WHERE day = ? AND provider = ?').bind(res.units, res.day, provider).run();
 }
 
@@ -151,7 +163,7 @@ export async function pausedUntil(env: Env): Promise<{ until: Date; reason: stri
   if (!until || new Date(until).getTime() <= Date.now()) return null;
   return { until: new Date(until), reason: (await getSetting(env, 'ai_paused_reason')) ?? '' };
 }
-async function pause(env: Env, until: Date, reason: string): Promise<void> {
+export async function pause(env: Env, until: Date, reason: string): Promise<void> {
   await setSetting(env, 'ai_paused_until', until.toISOString());
   await setSetting(env, 'ai_paused_reason', reason);
   await log(env, 'warn', 'ai', `${reason}，AI 判讀暫停到 ${until.toISOString().slice(0, 16).replace('T', ' ')}（UTC），檔案照常歸檔`);

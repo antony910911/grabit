@@ -96,7 +96,23 @@ export interface FileItem {
   ai_status: AiStatus | null;
   ai_error: string | null;
   ai_at: string | null;
+  uploader_key: string | null;
+  uploader_name: string | null;
   tags: Tag[];
+}
+
+/** 上傳者（虛擬檢視）：用唯一 ID 關聯，名稱可以自訂別名 */
+export interface Uploader {
+  key: string;
+  name: string;
+  display_name: string | null;
+  alias: string | null;
+  source: string;
+  count: number;
+  groups: number;
+  projects: number;
+  last_at: string;
+  pinned: boolean;
 }
 
 export type AiStatus = 'queued' | 'running' | 'done' | 'failed' | 'skipped' | 'deferred';

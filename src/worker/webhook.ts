@@ -10,7 +10,7 @@ import {
   type LineEvent,
   type WebhookBody,
 } from './line';
-import { getGroup, groupAccepts, log } from './db';
+import { getGroup, groupAccepts, log, touchUploader } from './db';
 import { splitExt } from './rules';
 import { enqueueFile } from './processor';
 
@@ -78,14 +78,16 @@ export async function handleEvents(env: Env, ctx: WaitUntil, events: LineEvent[]
         ? msg.fileName
         : generatedFileName(msg.type, msg.id, receivedAt, env.TIMEZONE || 'Asia/Taipei');
     const senderName = await getSenderName(env.LINE_CHANNEL_ACCESS_TOKEN, event.source).catch(() => null);
+    // 上傳者用 LINE User ID 識別（同一個 Provider 內固定），不用會變的顯示名稱
+    const uploaderKey = event.source.userId ? `line:${event.source.userId}` : null;
     const ext = splitExt(originalName).ext;
     // 群組設定不接收這種檔案（例如關閉照片備份）：記錄為略過，不下載
     const accepted = groupAccepts(group, ext, msg.type);
 
     const r = await env.DB.prepare(
       `INSERT OR IGNORE INTO files
-       (line_message_id, group_id, sender_id, sender_name, message_type, original_name, ext, size, image_set_id, received_at, reply_token, source, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'line', ?)`,
+       (line_message_id, group_id, sender_id, sender_name, message_type, original_name, ext, size, image_set_id, received_at, reply_token, source, status, uploader_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'line', ?, ?)`,
     )
       .bind(
         msg.id,
@@ -100,10 +102,13 @@ export async function handleEvents(env: Env, ctx: WaitUntil, events: LineEvent[]
         receivedAt.toISOString(),
         event.replyToken ?? null,
         accepted ? 'pending' : 'skipped',
+        uploaderKey,
       )
       .run();
     // changes = 0 代表 LINE 重送的同一則訊息，已經處理過
-    if (!r.meta.changes || !accepted) continue;
+    if (!r.meta.changes) continue;
+    await touchUploader(env, uploaderKey, 'line', senderName);
+    if (!accepted) continue;
     await enqueueFile(env, ctx, Number(r.meta.last_row_id));
   }
 }

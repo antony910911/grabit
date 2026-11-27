@@ -4,7 +4,7 @@ import { api, type FileItem, type Project, type Storage, type Tag } from '../api
 import { Empty, ErrorBox, FileIcon, Icon, Loading, Sheet, TagChip } from '../components';
 import { FileSheet, useAfterMove } from '../FileSheet';
 import { Files } from './Files';
-import { ask, canEdit, currentUrl, formatBytes, formatTime, replaceUrl, useLoad, useMe, useToast } from '../lib';
+import { ask, canEdit, currentUrl, formatBytes, formatTime, Link, replaceUrl, useLoad, useMe, useToast } from '../lib';
 
 type Mode = 'list' | 'folders' | 'projects' | 'tags';
 const DRAG = 'application/x-grabit-file';
@@ -385,9 +385,69 @@ function RenameFolder({ storageId, from, onClose, onDone }: { storageId: number;
 
 const COLORS = ['#4a6fa5', '#2c7a52', '#a75a1d', '#a2382f', '#6a4a97', '#2f8a8a', '#8a6d1f', '#697181'];
 
-function Column({ title, color, count, projectId, tick, editable, onOpen, refresh, onEdit }: { title: string; color: string; count?: number; projectId: number | 'none'; tick: number; editable: boolean; onOpen: (id: number) => void; refresh: () => void; onEdit?: () => void }) {
+const PAGE = 12;
+
+function readSet(key: string): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(key) ?? '[]') as string[]);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * 看板的一欄：一次只載入最近 12 份（只看最新版本），在欄內捲動與「載入更多」，
+ * 整個頁面不會因為檔案變多而越拉越長。可以收合成窄條。
+ */
+function Column({
+  title,
+  color,
+  count,
+  projectId,
+  tick,
+  q,
+  editable,
+  collapsed,
+  onToggle,
+  onOpen,
+  refresh,
+  onEdit,
+}: {
+  title: string;
+  color: string;
+  count?: number;
+  projectId: number | 'none';
+  tick: number;
+  q: string;
+  editable: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
+  onOpen: (id: number) => void;
+  refresh: () => void;
+  onEdit?: () => void;
+}) {
   const toast = useToast();
-  const files = useLoad(() => api<{ items: FileItem[]; hasMore: boolean }>(`/files?project=${projectId}&limit=60`), [projectId, tick]);
+  const [items, setItems] = useState<FileItem[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const load = async (offset: number) => {
+    setLoading(true);
+    try {
+      const p = new URLSearchParams({ project: String(projectId), latest: '1', limit: String(PAGE), offset: String(offset) });
+      if (q) p.set('q', q);
+      const r = await api<{ items: FileItem[]; hasMore: boolean }>(`/files?${p}`);
+      setItems((prev) => (offset ? [...prev, ...r.items] : r.items));
+      setHasMore(r.hasMore);
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    if (!collapsed) void load(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, tick, q, collapsed]);
   const drop = useDrop(async (id) => {
     try {
       await api('/files/bulk', { method: 'POST', json: { ids: [id], projectId: projectId === 'none' ? null : projectId } });
@@ -397,21 +457,45 @@ function Column({ title, color, count, projectId, tick, editable, onOpen, refres
       toast((e as Error).message, 'error');
     }
   }, editable);
+  const listUrl = `/files?project=${projectId}`;
+
+  if (collapsed) {
+    return (
+      <button className={`kanban-col collapsed ${drop.over ? 'drop' : ''}`} {...drop.props} onClick={onToggle} aria-label={`展開 ${title}`} title={`展開「${title}」`}>
+        <i style={{ background: color }} />
+        <span className="kc-title" aria-hidden="true">
+          {[...title].slice(0, 7).map((ch, i) => (
+            <span key={i}>{ch}</span>
+          ))}
+          {[...title].length > 7 && <span>…</span>}
+        </span>
+        <span className="kc-count">{count ?? ''}</span>
+      </button>
+    );
+  }
   return (
     <section className={`kanban-col ${drop.over ? 'drop' : ''}`} {...drop.props}>
       <header>
         <i style={{ background: color }} />
         <strong>{title}</strong>
-        <span className="muted small">{count ?? (files.data ? `${files.data.items.length}${files.data.hasMore ? '+' : ''}` : '')}</span>
+        <span className="muted small">{q ? `${items.length}${hasMore ? '+' : ''} 符合` : (count ?? '')}</span>
         {onEdit && editable && (
           <button className="btn ghost icon sm" onClick={onEdit} aria-label={`編輯專案 ${title}`}>
             <Icon name="settings" />
           </button>
         )}
+        <button className="btn ghost icon sm" onClick={onToggle} aria-label={`收合 ${title}`} title="收合這一欄">
+          <Icon name="x" />
+        </button>
       </header>
+      {projectId === 'none' && editable && (count ?? 0) > 30 && !q && (
+        <Link to="/files?project=none" className="kanban-hint">
+          有 {count} 份還沒分專案 → 到檔案頁一次選取、加入專案
+        </Link>
+      )}
       <div className="kanban-cards">
-        {files.loading && !files.data && <Loading />}
-        {files.data?.items.map((f) => (
+        {loading && !items.length && <Loading />}
+        {items.map((f) => (
           <article key={f.id} className="kcard" onClick={() => onOpen(f.id)} {...dragProps(f, editable)}>
             <div className="kcard-top">
               <FileIcon ext={f.ext} type={f.message_type} />
@@ -429,27 +513,58 @@ function Column({ title, color, count, projectId, tick, editable, onOpen, refres
             )}
           </article>
         ))}
-        {files.data && !files.data.items.length && <div className="kanban-empty">{editable ? '把檔案拖到這裡' : '沒有檔案'}</div>}
-        {files.data?.hasMore && <div className="kanban-empty">只顯示最近 60 個</div>}
+        {!loading && !items.length && <div className="kanban-empty">{q ? '沒有符合的檔案' : editable ? '把檔案拖到這裡' : '沒有檔案'}</div>}
+        {hasMore && (
+          <button className="btn sm kanban-more" disabled={loading} onClick={() => load(items.length)}>
+            {loading ? '載入中…' : '載入更多'}
+          </button>
+        )}
       </div>
+      {(count ?? 0) > PAGE && (
+        <Link to={listUrl} className="kanban-all">
+          在清單裡看全部 {count} 份 →
+        </Link>
+      )}
     </section>
   );
 }
 
 function ProjectMode({ tick, editable, onOpen, refresh }: ModeProps) {
-  const projects = useLoad(() => api<{ items: Project[] }>('/projects'), [tick]);
+  const projects = useLoad(() => api<{ items: Project[]; unassigned: number }>('/projects'), [tick]);
   const [edit, setEdit] = useState<Partial<Project> | null>(null);
+  const [collapsed, setCollapsed] = useState(() => readSet('grabit-board-collapsed'));
+  const [text, setText] = useState('');
+  const [q, setQ] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setQ(text.trim()), 300);
+    return () => clearTimeout(t);
+  }, [text]);
+  const toggle = (key: string) => {
+    const next = new Set(collapsed);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setCollapsed(next);
+    try {
+      localStorage.setItem('grabit-board-collapsed', JSON.stringify([...next]));
+    } catch {
+      // 隱私模式：只在這次有效
+    }
+  };
   if (projects.error) return <ErrorBox message={projects.error} />;
+  const col = (key: string, props: Omit<Parameters<typeof Column>[0], 'tick' | 'q' | 'editable' | 'collapsed' | 'onToggle' | 'onOpen' | 'refresh'>) => (
+    <Column key={key} {...props} tick={tick} q={q} editable={editable} collapsed={collapsed.has(key)} onToggle={() => toggle(key)} onOpen={onOpen} refresh={refresh} />
+  );
   return (
     <>
-      <p className="muted small board-tip">
-        每一欄是一個專案。{editable ? '在電腦上把卡片拖到別的欄就能換專案；手機上點卡片，在檔案資訊裡選專案。' : ''}
-      </p>
+      <div className="board-bar">
+        <input className="input" type="search" placeholder="篩選看板上的檔案（檔名、內容、標籤）" value={text} onChange={(e) => setText(e.target.value)} aria-label="篩選看板" />
+        <p className="muted small board-tip">
+          每一欄只顯示最近的檔案，同一份文件只顯示最新版本；按欄位右上角的 × 可以收合。{editable ? '在電腦上把卡片拖到別的欄就能換專案。' : ''}
+        </p>
+      </div>
       <div className="kanban">
-        <Column title="未分專案" color="var(--border)" projectId="none" tick={tick} editable={editable} onOpen={onOpen} refresh={refresh} />
-        {projects.data?.items.map((p) => (
-          <Column key={p.id} title={p.name} color={p.color} count={p.count} projectId={p.id} tick={tick} editable={editable} onOpen={onOpen} refresh={refresh} onEdit={() => setEdit(p)} />
-        ))}
+        {col('none', { title: '未分專案', color: 'var(--border)', count: projects.data?.unassigned, projectId: 'none' })}
+        {projects.data?.items.map((p) => col(`p${p.id}`, { title: p.name, color: p.color, count: p.count, projectId: p.id, onEdit: () => setEdit(p) }))}
         {editable && (
           <button className="kanban-add" onClick={() => setEdit({ name: '', color: COLORS[(projects.data?.items.length ?? 0) % COLORS.length], description: '' })}>
             <Icon name="plus" />
@@ -546,7 +661,9 @@ function TagMode({ tick, editable, onOpen, refresh }: ModeProps) {
   const toast = useToast();
   const tags = useLoad(() => api<{ items: Tag[] }>('/tags'), [tick]);
   const [sel, setSel] = useState<string>(() => currentUrl().searchParams.get('tag') ?? '');
-  const files = useLoad(() => (sel ? api<{ items: FileItem[] }>(`/files?tag=${sel}&limit=200`) : Promise.resolve({ items: [] as FileItem[] })), [sel, tick]);
+  const [shown, setShown] = useState(50);
+  useEffect(() => setShown(50), [sel]);
+  const files = useLoad(() => (sel ? api<{ items: FileItem[]; hasMore: boolean }>(`/files?tag=${sel}&limit=${shown}`) : Promise.resolve({ items: [] as FileItem[], hasMore: false })), [sel, tick, shown]);
   const [edit, setEdit] = useState<Tag | null>(null);
   const list = tags.data?.items ?? [];
   useEffect(() => {
@@ -614,6 +731,13 @@ function TagMode({ tick, editable, onOpen, refresh }: ModeProps) {
             />
           ))}
           {files.data && !files.data.items.length && <Empty title="沒有檔案">{editable ? '在電腦上可以把檔案拖到左邊的標籤上。' : ''}</Empty>}
+          {files.data?.hasMore && (
+            <div style={{ padding: 12, textAlign: 'center' }}>
+              <button className="btn sm" disabled={files.loading} onClick={() => setShown((n) => n + 50)}>
+                {files.loading ? '載入中…' : '載入更多'}
+              </button>
+            </div>
+          )}
         </div>
       </section>
       {edit && <TagSheet t={edit} onClose={() => setEdit(null)} onDone={() => (setEdit(null), setSel(''), refresh())} />}

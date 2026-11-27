@@ -41,6 +41,7 @@ export interface FileRow {
   reply_token: string | null;
   target_folder: string | null;
   root_ref?: string | null;
+  uploader_key: string | null;
   ai_status: AiStatus | null;
   ai_error: string | null;
   ai_at: string | null;
@@ -156,4 +157,15 @@ export function groupAccepts(g: GroupRow | null, ext: string, messageType: strin
   } catch {
     return true;
   }
+}
+
+/** 記下上傳者（第一次出現時建立；之後更新來源提供的名稱，不動自訂別名） */
+export async function touchUploader(env: Env, key: string | null, source: 'line' | 'email' | 'user', name: string | null): Promise<void> {
+  if (!key) return;
+  await env.DB.prepare(
+    `INSERT INTO uploaders (key, source, display_name) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET display_name = COALESCE(excluded.display_name, uploaders.display_name), updated_at = datetime('now')`,
+  )
+    .bind(key, source, name)
+    .run();
 }

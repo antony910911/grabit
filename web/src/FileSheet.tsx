@@ -199,7 +199,22 @@ export function FileSheet({ id, folders, onClose, onChanged }: { id: number; fol
             <dt>來源</dt>
             <dd>
               <SourceIcon type={f.source} /> {f.group_name}
-              {f.sender_name ? ` · ${f.sender_name}` : ''}
+            </dd>
+            <dt>上傳者</dt>
+            <dd>
+              {f.uploader_key ? (
+                <button
+                  className="linklike"
+                  onClick={() => {
+                    onClose();
+                    navigate(`/files?uploader=${encodeURIComponent(f.uploader_key!)}`);
+                  }}
+                >
+                  {f.uploader_name ?? '（沒有名稱）'} · 看這個人的所有檔案
+                </button>
+              ) : (
+                <span className="muted">{f.uploader_name ? `${f.uploader_name}（未知身分）` : '未知上傳者'}</span>
+              )}
             </dd>
             <dt>收到時間</dt>
             <dd>{formatTime(f.received_at)}</dd>

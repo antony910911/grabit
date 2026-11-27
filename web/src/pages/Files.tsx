@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { api, type FileItem, type Project, type Sources, type Stats } from '../api';
+import { api, type FileItem, type Project, type Sources, type Stats, type Uploader } from '../api';
 import { Empty, ErrorBox, FileIcon, FolderInput, Icon, Loading, ProjectBadge, Sheet, SourceIcon, StatusBadge, Switch, TagChip } from '../components';
 import { FileSheet, useAfterMove } from '../FileSheet';
 import { ask, canEdit, currentUrl, formatTime, replaceUrl, useLoad, useMe, useToast } from '../lib';
@@ -35,10 +35,11 @@ interface Filters {
   tag: string;
   year: string;
   type: string;
+  uploader: string;
   latest: boolean;
 }
 
-const EMPTY: Filters = { status: 'all', group: '', project: '', tag: '', year: '', type: '', latest: false };
+const EMPTY: Filters = { status: 'all', group: '', project: '', tag: '', year: '', type: '', uploader: '', latest: false };
 
 function readQuery(): Filters & { open: number | null } {
   const p = currentUrl().searchParams;
@@ -49,12 +50,104 @@ function readQuery(): Filters & { open: number | null } {
     tag: p.get('tag') ?? '',
     year: p.get('year') ?? '',
     type: p.get('type') ?? '',
+    uploader: p.get('uploader') ?? '',
     latest: p.get('latest') === '1',
     open: p.get('open') ? Number(p.get('open')) : null,
   };
 }
 
-export function SourcePanel({ sources, total, filters, set }: { sources: Sources | null; total: number; filters: Filters; set: (f: Partial<Filters>) => void }) {
+type UploaderList = { items: Uploader[]; unknown: number };
+const SOURCE_LABEL: Record<string, string> = { line: 'LINE', email: 'Email', user: '手動上傳' };
+
+function readPref(key: string, d: boolean): boolean {
+  try {
+    const v = localStorage.getItem(key);
+    return v == null ? d : v === '1';
+  } catch {
+    return d;
+  }
+}
+
+/** 上傳者清單：可以搜尋、釘選，依看得到的檔案數排序；同名的人會顯示來源與 ID 尾碼區分 */
+function UploaderSection({ data, active, pick, onPin }: { data: UploaderList | null; active: string; pick: (key: string) => void; onPin: (u: Uploader) => void }) {
+  const [open, setOpen] = useState(() => readPref('grabit-uploaders-open', true));
+  const [q, setQ] = useState('');
+  const [all, setAll] = useState(false);
+  if (!data || (!data.items.length && !data.unknown)) return null;
+  const toggle = () => {
+    setOpen(!open);
+    try {
+      localStorage.setItem('grabit-uploaders-open', open ? '0' : '1');
+    } catch {
+      // 隱私模式
+    }
+  };
+  const names = new Map<string, number>();
+  for (const u of data.items) names.set(u.name, (names.get(u.name) ?? 0) + 1);
+  const kw = q.trim().toLowerCase();
+  const list = data.items.filter((u) => !kw || u.name.toLowerCase().includes(kw) || (u.display_name ?? '').toLowerCase().includes(kw));
+  const LIMIT = 8;
+  const shown = kw || all ? list : list.slice(0, Math.max(LIMIT, data.items.filter((u) => u.pinned).length));
+  return (
+    <>
+      <button className="src-head" onClick={toggle} aria-expanded={open}>
+        <h4>上傳者</h4>
+        <Icon name={open ? 'up' : 'down'} />
+      </button>
+      {open && (
+        <>
+          {data.items.length > LIMIT && <input className="input src-search" type="search" placeholder="搜尋上傳者" value={q} onChange={(e) => setQ(e.target.value)} aria-label="搜尋上傳者" />}
+          {shown.map((u) => (
+            <div key={u.key} className={`src src-row ${active === u.key ? 'active' : ''}`}>
+              <button className="src-main" onClick={() => pick(active === u.key ? '' : u.key)}>
+                <span className="src-name">
+                  {u.name}
+                  {(names.get(u.name) ?? 0) > 1 && (
+                    <small>
+                      {SOURCE_LABEL[u.source] ?? u.source}・…{u.key.slice(-4)}
+                    </small>
+                  )}
+                </span>
+              </button>
+              <button className={`src-pin ${u.pinned ? 'on' : ''}`} onClick={() => onPin(u)} aria-label={u.pinned ? `取消釘選 ${u.name}` : `釘選 ${u.name}`} title={u.pinned ? '取消釘選' : '釘選到最上面'}>
+                {u.pinned ? '★' : '☆'}
+              </button>
+              <span className="n">{u.count}</span>
+            </div>
+          ))}
+          {!kw && list.length > shown.length && (
+            <button className="src src-more" onClick={() => setAll(true)}>
+              顯示全部 {list.length} 位
+            </button>
+          )}
+          {kw && !list.length && <div className="muted small" style={{ padding: '4px 10px' }}>找不到符合的上傳者</div>}
+          {!kw && data.unknown > 0 && (
+            <button className={`src ${active === 'unknown' ? 'active' : ''}`} onClick={() => pick(active === 'unknown' ? '' : 'unknown')}>
+              <span className="muted">未知上傳者</span>
+              <span className="n">{data.unknown}</span>
+            </button>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+export function SourcePanel({
+  sources,
+  total,
+  filters,
+  set,
+  uploaders,
+  onPin,
+}: {
+  sources: Sources | null;
+  total: number;
+  filters: Filters;
+  set: (f: Partial<Filters>) => void;
+  uploaders: UploaderList | null;
+  onPin: (u: Uploader) => void;
+}) {
   if (!sources) return <Loading />;
   const item = (active: boolean, onClick: () => void, label: ReactNode, n: number, key: string) => (
     <button key={key} className={`src ${active ? 'active' : ''}`} onClick={onClick}>
@@ -62,14 +155,16 @@ export function SourcePanel({ sources, total, filters, set }: { sources: Sources
       <span className="n">{n}</span>
     </button>
   );
+  // 各個篩選條件可以疊加，從上方的標記單獨清除
+  const none = !filters.group && !filters.project && !filters.tag && !filters.year && !filters.uploader;
   return (
     <>
       <h4>檔案來源</h4>
-      {item(!filters.group && !filters.project && !filters.tag && !filters.year, () => set({ group: '', project: '', tag: '', year: '' }), '全部檔案', total, 'all')}
+      {item(none, () => set({ group: '', project: '', tag: '', year: '', uploader: '' }), '全部檔案', total, 'all')}
       {sources.groups.map((g) =>
         item(
           filters.group === g.id,
-          () => set({ group: filters.group === g.id ? '' : g.id, project: '', tag: '' }),
+          () => set({ group: filters.group === g.id ? '' : g.id }),
           <>
             <SourceIcon type={g.source_type} />
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.name || '（未命名）'}</span>
@@ -78,8 +173,9 @@ export function SourcePanel({ sources, total, filters, set }: { sources: Sources
           g.id,
         ),
       )}
+      <UploaderSection data={uploaders} active={filters.uploader} pick={(key) => set({ uploader: key })} onPin={onPin} />
       {sources.projects.length > 0 && <h4>專案</h4>}
-      {sources.projects.map((p) => item(filters.project === String(p.id), () => set({ project: filters.project === String(p.id) ? '' : String(p.id), group: '', tag: '' }), <ProjectBadge name={p.name} color={p.color} />, p.count, `p${p.id}`))}
+      {sources.projects.map((p) => item(filters.project === String(p.id), () => set({ project: filters.project === String(p.id) ? '' : String(p.id) }), <ProjectBadge name={p.name} color={p.color} />, p.count, `p${p.id}`))}
       {sources.tags.length > 0 && <h4>標籤</h4>}
       {sources.tags
         .filter((t) => (t.count ?? 0) > 0)
@@ -121,7 +217,8 @@ export function FileRow({ f, selecting, selected, onToggle, onOpen, draggable }:
       <div className="grow">
         <div className="title">{f.stored_name ?? f.original_name}</div>
         <div className="meta">
-          <SourceIcon type={f.source} /> {f.group_name} · {f.status === 'failed' ? f.error : f.folder_path ?? '等待處理'} · {formatTime(f.received_at)}
+          <SourceIcon type={f.source} /> {f.group_name}
+          {f.uploader_name ? ` · ${f.uploader_name}` : ''} · {f.status === 'failed' ? f.error : f.folder_path ?? '等待處理'} · {formatTime(f.received_at)}
         </div>
         {(f.project_name || f.tags.length > 0 || f.version_label) && (
           <div className="sub">
@@ -159,13 +256,31 @@ export function Files() {
   const [bulkLabel, setBulkLabel] = useState(false);
   const [filterSheet, setFilterSheet] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [aliasDraft, setAliasDraft] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const stats = useLoad(() => api<Stats>('/stats'), [tick]);
   const sources = useLoad(() => api<Sources>('/sources'), [tick]);
+  const uploaders = useLoad(() => api<UploaderList>('/uploaders'), [tick]);
   const folders = useLoad(() => api<{ items: { path: string }[] }>('/folders'), [tick]);
   const folderList = [...new Set(folders.data?.items.map((f) => f.path) ?? [])];
   const set = (f: Partial<Filters>) => setFilters((cur) => ({ ...cur, ...f }));
+
+  // 從別的地方連進來（例如檔案資訊的「看這個人的所有檔案」）時，套用網址上的篩選
+  useEffect(() => {
+    const onNav = () => {
+      if (!currentUrl().pathname.startsWith('/files')) return;
+      const { open, ...next } = readQuery();
+      setFilters(next);
+      setOpenId(open);
+    };
+    window.addEventListener('grabit-nav', onNav);
+    window.addEventListener('popstate', onNav);
+    return () => {
+      window.removeEventListener('grabit-nav', onNav);
+      window.removeEventListener('popstate', onNav);
+    };
+  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => setQuery(q), 300);
@@ -184,7 +299,7 @@ export function Files() {
     setLoading(true);
     try {
       const p = new URLSearchParams({ status: filters.status, q: query, offset: String(offset), limit: '50' });
-      for (const k of ['group', 'project', 'tag', 'year', 'type'] as const) if (filters[k]) p.set(k, filters[k]);
+      for (const k of ['group', 'project', 'tag', 'year', 'type', 'uploader'] as const) if (filters[k]) p.set(k, filters[k]);
       if (filters.latest) p.set('latest', '1');
       const r = await api<{ items: FileItem[]; hasMore: boolean }>(`/files?${p}`);
       setItems((prev) => (offset ? [...prev, ...r.items] : r.items));
@@ -254,6 +369,28 @@ export function Files() {
   const t = sources.data?.tags.find((x) => String(x.id) === filters.tag);
   if (t) activeChips.push({ label: `#${t.name}`, clear: () => set({ tag: '' }) });
   if (filters.year) activeChips.push({ label: `${filters.year} 年`, clear: () => set({ year: '' }) });
+  const up = filters.uploader === 'unknown' ? null : uploaders.data?.items.find((x) => x.key === filters.uploader);
+  if (filters.uploader) activeChips.push({ label: `上傳者：${filters.uploader === 'unknown' ? '未知' : (up?.name ?? '…')}`, clear: () => set({ uploader: '' }) });
+  if (filters.type) activeChips.push({ label: TYPES.find(([k]) => k === filters.type)?.[1] ?? filters.type, clear: () => set({ type: '' }) });
+
+  const pin = async (u: Uploader) => {
+    try {
+      await api(`/uploaders/${encodeURIComponent(u.key)}/pin`, { method: 'PUT', json: { pinned: !u.pinned } });
+      uploaders.reload();
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
+  };
+  const saveAlias = async (u: Uploader) => {
+    try {
+      await api(`/uploaders/${encodeURIComponent(u.key)}`, { method: 'PATCH', json: { alias: aliasDraft ?? '' } });
+      toast('已更新顯示名稱，舊檔案也會跟著顯示新名稱');
+      setAliasDraft(null);
+      refresh();
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
+  };
 
   return (
     <>
@@ -286,7 +423,7 @@ export function Files() {
 
       <div className="files-layout">
         <aside className="source-panel card card-pad">
-          <SourcePanel sources={sources.data} total={stats.data?.archived ?? 0} filters={filters} set={set} />
+          <SourcePanel sources={sources.data} total={stats.data?.archived ?? 0} filters={filters} set={set} uploaders={uploaders.data} onPin={pin} />
         </aside>
         <div>
           <div className="tabs" role="tablist">
@@ -323,6 +460,51 @@ export function Files() {
               只看最新版本
             </label>
           </div>
+          {filters.uploader && (
+            <div className="uploader-head card card-pad">
+              <div className="grow">
+                {aliasDraft != null && up ? (
+                  <form
+                    className="row"
+                    style={{ gap: 6, flexWrap: 'nowrap', marginBottom: 6 }}
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void saveAlias(up);
+                    }}
+                  >
+                    <input className="input" value={aliasDraft} onChange={(e) => setAliasDraft(e.target.value)} placeholder={up.display_name ?? '顯示名稱'} maxLength={40} autoFocus aria-label="顯示名稱" />
+                    <button className="btn sm primary" type="submit">
+                      儲存
+                    </button>
+                    <button className="btn sm" type="button" onClick={() => setAliasDraft(null)}>
+                      取消
+                    </button>
+                  </form>
+                ) : (
+                  <h2>{filters.uploader === 'unknown' ? '未知上傳者的檔案' : `${up?.name ?? '…'} 的檔案`}</h2>
+                )}
+                <p className="muted small">
+                  {filters.uploader === 'unknown'
+                    ? `${uploaders.data?.unknown ?? 0} 份檔案 · 舊的檔案或來源沒有提供身分，不會依名稱合併`
+                    : up
+                      ? `${up.count} 份檔案 · 跨 ${up.groups} 個群組${up.projects ? `、${up.projects} 個專案` : ''} · ${SOURCE_LABEL[up.source] ?? up.source}${up.alias && up.display_name ? ` · 原名「${up.display_name}」` : ''}`
+                      : ''}
+                </p>
+              </div>
+              {up && (
+                <div className="row" style={{ gap: 6 }}>
+                  <button className="btn sm" onClick={() => pin(up)}>
+                    {up.pinned ? '★ 已釘選' : '☆ 釘選'}
+                  </button>
+                  {editable && aliasDraft == null && (
+                    <button className="btn sm" onClick={() => setAliasDraft(up.alias ?? '')}>
+                      改顯示名稱
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {activeChips.length > 0 && (
             <div className="active-filters">
               {activeChips.map((c) => (
@@ -386,6 +568,8 @@ export function Files() {
                 set(f);
                 setFilterSheet(false);
               }}
+              uploaders={uploaders.data}
+              onPin={pin}
             />
           </div>
         </Sheet>

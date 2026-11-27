@@ -30,15 +30,17 @@ const CATEGORY_EXT: Record<string, string[]> = {
 
 export const FILE_SELECT = `SELECT f.id, f.group_id, f.sender_name, f.message_type, f.original_name, f.stored_name, f.ext, f.size, f.folder_path, f.drive_link,
   f.unsorted, f.manual, f.status, f.duplicate_of, f.error, f.attempts, f.received_at, f.storage_id, f.project_id, f.source, f.classified_by,
-  f.version_key, f.version_label, f.ai_summary, f.target_folder, f.matched_rule_id, f.root_ref, f.ai_status, f.ai_error, f.ai_at,
+  f.version_key, f.version_label, f.ai_summary, f.target_folder, f.matched_rule_id, f.root_ref, f.ai_status, f.ai_error, f.ai_at, f.uploader_key,
   COALESCE(g.alias, g.name, f.group_id) AS group_name, r.name AS rule_name, p.name AS project_name, p.color AS project_color, s.name AS storage_name,
+  COALESCE(u.alias, u.display_name, f.sender_name) AS uploader_name,
   (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color, 'source', ft.source)) FROM file_tags ft JOIN tags t ON t.id = ft.tag_id WHERE ft.file_id = f.id) AS tags_json,
   (SELECT COUNT(*) FROM files v WHERE v.version_key = f.version_key AND v.status = 'done') AS version_count
   FROM files f
   LEFT JOIN groups g ON g.id = f.group_id
   LEFT JOIN rules r ON r.id = f.matched_rule_id
   LEFT JOIN projects p ON p.id = f.project_id
-  LEFT JOIN storages s ON s.id = f.storage_id`;
+  LEFT JOIN storages s ON s.id = f.storage_id
+  LEFT JOIN uploaders u ON u.key = f.uploader_key`;
 
 export function shapeFile<T extends { tags_json?: string | null }>(row: T) {
   const { tags_json, ...rest } = row;
@@ -121,6 +123,11 @@ files.get('/files', async (c) => {
     parts.where.push('f.group_id = ?');
     parts.binds.push(q.group);
   }
+  if (q.uploader) {
+    // 依唯一 ID 篩選（不是依名稱）；unknown＝沒有 ID 的舊檔案
+    parts.where.push(q.uploader === 'unknown' ? 'f.uploader_key IS NULL' : 'f.uploader_key = ?');
+    if (q.uploader !== 'unknown') parts.binds.push(q.uploader);
+  }
   if (q.project) {
     parts.where.push(q.project === 'none' ? 'f.project_id IS NULL' : 'f.project_id = ?');
     if (q.project !== 'none') parts.binds.push(Number(q.project));
@@ -159,6 +166,70 @@ files.get('/files', async (c) => {
     .bind(...parts.binds, limit + 1, offset)
     .all<{ tags_json: string | null }>();
   return c.json({ items: await withCloudAccess(c, rows.results.slice(0, limit).map(shapeFile) as CloudFields[]), hasMore: rows.results.length > limit });
+});
+
+// ---------- 上傳者（虛擬檢視：只是查詢條件，不複製也不搬移檔案） ----------
+
+/** 上傳者清單：只算目前使用者看得到的檔案；看不到任何檔案的上傳者不列出 */
+files.get('/uploaders', async (c) => {
+  const user = c.get('user');
+  const scope = fileScope(user);
+  const q = c.req.query('q')?.trim();
+  const limit = Math.min(Number(c.req.query('limit') ?? 300) || 300, 500);
+  const where = ["f.status NOT IN ('deleted', 'skipped')", scope.sql];
+  const binds: unknown[] = [...scope.binds];
+  if (q) {
+    where.push('(u.alias LIKE ? OR u.display_name LIKE ?)');
+    binds.push(`%${q}%`, `%${q}%`);
+  }
+  const rows = await c.env.DB.prepare(
+    `SELECT f.uploader_key AS key, u.source, u.display_name, u.alias, COUNT(*) AS count, COUNT(DISTINCT f.group_id) AS groups,
+       COUNT(DISTINCT f.project_id) AS projects, MAX(f.received_at) AS last_at,
+       EXISTS (SELECT 1 FROM uploader_pins up WHERE up.email = ? AND up.uploader_key = f.uploader_key) AS pinned
+     FROM files f LEFT JOIN uploaders u ON u.key = f.uploader_key
+     WHERE f.uploader_key IS NOT NULL AND ${where.join(' AND ')}
+     GROUP BY f.uploader_key ORDER BY pinned DESC, count DESC, last_at DESC LIMIT ?`,
+  )
+    .bind(user.email, ...binds, limit)
+    .all<{ key: string; source: string | null; display_name: string | null; alias: string | null; count: number; groups: number; projects: number; last_at: string; pinned: number }>();
+  const unknown = q
+    ? null
+    : await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM files f WHERE f.uploader_key IS NULL AND ${where.join(' AND ')}`)
+        .bind(...binds)
+        .first<{ n: number }>();
+  return c.json({
+    items: rows.results.map((r) => ({ ...r, name: r.alias || r.display_name || '（沒有名稱）', pinned: !!r.pinned, source: r.source ?? r.key.split(':')[0] })),
+    unknown: unknown?.n ?? 0,
+  });
+});
+
+async function visibleUploader(c: Ctx, key: string) {
+  const scope = fileScope(c.get('user'));
+  const r = await c.env.DB.prepare(`SELECT 1 FROM files f WHERE f.uploader_key = ? AND ${scope.sql} LIMIT 1`).bind(key, ...scope.binds).first();
+  if (!r) throw notFound('找不到這位上傳者');
+}
+
+/** 自訂別名（只影響顯示，檔案仍然用 ID 關聯）；空白代表清除 */
+files.patch('/uploaders/:key', async (c) => {
+  const user = need(c, 'editor');
+  const key = c.req.param('key');
+  await visibleUploader(c, key);
+  const { alias } = await readJson<{ alias?: string | null }>(c);
+  const clean = (alias ?? '').replace(/\s+/g, ' ').trim().slice(0, 40) || null;
+  await c.env.DB.prepare("UPDATE uploaders SET alias = ?, updated_at = datetime('now') WHERE key = ?").bind(clean, key).run();
+  await log(c.env, 'info', 'uploader', `${user.email} 把上傳者 ${key} 的顯示名稱${clean ? `改成「${clean}」` : '改回原本的名稱'}`);
+  return c.json({ ok: true, alias: clean });
+});
+
+/** 釘選常用上傳者（每個人自己的） */
+files.put('/uploaders/:key/pin', async (c) => {
+  const user = c.get('user');
+  const key = c.req.param('key');
+  await visibleUploader(c, key);
+  const { pinned } = await readJson<{ pinned?: boolean }>(c);
+  if (pinned) await c.env.DB.prepare('INSERT OR IGNORE INTO uploader_pins (email, uploader_key) VALUES (?, ?)').bind(user.email, key).run();
+  else await c.env.DB.prepare('DELETE FROM uploader_pins WHERE email = ? AND uploader_key = ?').bind(user.email, key).run();
+  return c.json({ ok: true, pinned: !!pinned });
 });
 
 files.get('/files/:id', async (c) => {
@@ -491,6 +562,7 @@ files.post('/upload', async (c) => {
     mime: blob.type,
     data: await blob.arrayBuffer(),
     sender: user.name ?? user.email,
+    senderId: user.email,
     key: `upload:${crypto.randomUUID()}`,
     folder: folder ? cleanFolderPath(folder) : null,
     projectId: project,

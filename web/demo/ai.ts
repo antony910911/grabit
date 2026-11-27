@@ -89,12 +89,12 @@ export const demoAi: AiEngine = {
     }
     const best = Math.max(0, ...[...score.values()].map((x) => x.n));
     const hits = [...score.values()].filter((x) => x.n === best).map((x) => x.hit).slice(0, 8);
-    if (!hits.length) return '找不到相關的檔案。可以換個關鍵字試試，例如專案名稱、樣品編號或檔案類型。\n\n（展示版使用模擬 AI；正式版由 Claude 讀取檔案摘要與內容後回答。）';
+    if (!hits.length) return '找不到相關的檔案。可以換個關鍵字試試，例如專案名稱、樣品編號或檔案類型。\n\n（展示版使用模擬 AI；正式版由你選的 AI 引擎讀取檔案摘要與內容後回答，免費的 Workers AI 也可以。）';
     return [
       `找到 ${hits.length} 個相關檔案：`,
       ...hits.map((h) => `• ${h.name} [#${h.id}]：${h.folder}，${h.group}，${h.received_at.slice(0, 10)}${h.summary ? `。${h.summary}` : ''}`),
       '',
-      '（展示版使用模擬 AI；正式版由 Claude 讀取檔案摘要與內容後，用自然語言回答你的問題。）',
+      '（展示版使用模擬 AI；正式版由你選的 AI 引擎（免費的 Workers AI 或 Gemini）讀取檔案摘要與內容後，用自然語言回答你的問題。）',
     ].join('\n');
   },
 };
