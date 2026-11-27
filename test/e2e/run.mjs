@@ -261,8 +261,50 @@ try {
   r = await post('/api/users', { email: 'viewer@example.com', role: 'viewer', groups: [] });
   check('新增成員', r.status === 200, JSON.stringify(r.body));
 
+  // ---------- Google Drive 專屬資料夾與分享 ----------
+  let st = (await api('/api/storages')).body.items[0];
+  check('自動建立專屬資料夾並提供連結', /^https:\/\/drive\.google\.com\/drive\/folders\//.test(st.folderLink ?? '') && st.filesOutside === 0, JSON.stringify(st));
+  const allFiles = await (await fetch(BASE + '/api/__drive')).json();
+  check('所有檔案都在同一個專屬資料夾裡', new Set(allFiles.filter((f) => !f.trashed).map((f) => f.root)).size === 1);
+  const rootId = st.folderLink.split('/').pop();
+  const permsOf = async () => (await (await fetch(BASE + '/api/__drive/perms')).json())[rootId] ?? [];
+  r = await patch('/api/storages/1', { share: 'anyone' });
+  check('分享給知道連結的任何人', r.status === 200 && JSON.stringify(await permsOf()) === '["anyone"]', JSON.stringify(await permsOf()));
+  r = await patch('/api/storages/1', { share: 'members' });
+  let ps = await permsOf();
+  check('改成只分享給 GrabIt 成員（移除公開連結）', !ps.includes('anyone') && ps.includes('admin@example.com') && ps.includes('viewer@example.com'), JSON.stringify(ps));
+  await post('/api/users', { email: 'newbie@example.com', role: 'viewer' });
+  await sleep(800);
+  check('新增成員時自動分享資料夾', (await permsOf()).includes('newbie@example.com'), JSON.stringify(await permsOf()));
+  await api('/api/users/newbie%40example.com', { method: 'DELETE' });
+  await sleep(800);
+  check('移除成員時自動取消分享', !(await permsOf()).includes('newbie@example.com'), JSON.stringify(await permsOf()));
+  r = await patch('/api/storages/1', { share: 'private' });
+  check('改成不分享', (await permsOf()).length === 0, JSON.stringify(await permsOf()));
+  r = await patch('/api/storages/1', { root_folder: 'GrabIt 檔案' });
+  check('專屬資料夾改名（檔案不用搬）', (await drive()).every((p) => p.startsWith('GrabIt 檔案/')), JSON.stringify(await drive()));
+
+  // 資料夾被刪掉（或舊版散落的檔案）→ 自動建立新的專屬資料夾，並可以把舊檔整理進來
+  await fetch(BASE + '/api/__drive/trash-roots');
+  let moved = 0;
+  for (let i = 0; i < 10; i++) {
+    r = await post('/api/storages/1/consolidate', {});
+    moved += r.body?.moved ?? 0;
+    if (!r.body?.remaining) break;
+  }
+  st = (await api('/api/storages')).body.items[0];
+  const after = (await (await fetch(BASE + '/api/__drive')).json()).filter((f) => !f.trashed);
+  check('舊檔整理到新的專屬資料夾', moved > 0 && st.filesOutside === 0 && st.folderLink.split('/').pop() !== rootId && after.every((f) => !f.rootTrashed && f.root === st.folderLink.split('/').pop()), JSON.stringify({ moved, st, after: after.slice(0, 3) }));
+  const fd2 = new FormData();
+  fd2.append('file', new Blob(['after root change'], { type: 'text/plain' }), '新根目錄測試.txt');
+  await fetch(`${BASE}/api/upload`, { method: 'POST', body: fd2, headers: { Cookie: COOKIE } });
+  const latest = (await (await fetch(BASE + '/api/__drive')).json()).find((f) => f.path.endsWith('新根目錄測試.txt'));
+  check('之後的新檔案也放進新的專屬資料夾', latest?.root === st.folderLink.split('/').pop(), JSON.stringify(latest));
+  const dl = await fetch(`${BASE}/api/files/${f1.id}/download`, { headers: { Cookie: COOKIE } });
+  check('透過 GrabIt 下載（依 GrabIt 權限）', dl.ok && (await dl.text()) === 'farnesene gc data' && /attachment/.test(dl.headers.get('content-disposition') ?? ''));
+
   r = await api('/api/stats');
-  check('統計', r.body?.archived >= 8 && r.body.failed === 1 && r.body.groups === 1, JSON.stringify(r.body));
+  check('統計', r.body?.archived >= 9 && r.body.failed === 1 && r.body.groups === 1, JSON.stringify(r.body));
   r = await post(`/api/files/${f9.id}/retry`, {});
   check('失敗檔案可以重試', r.status === 200);
   r = await api('/api/operations');

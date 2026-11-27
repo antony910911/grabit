@@ -23,10 +23,10 @@ export async function moveFile(env: Env, file: FileRow, folderPath: string, name
   const provider = providerFor(env, storage);
   const moved = await provider.move(file.drive_file_id, folderPath, name);
   await env.DB.prepare(
-    `UPDATE files SET folder_path = ?, stored_name = ?, drive_file_id = ?, drive_link = COALESCE(?, drive_link), unsorted = CASE WHEN ? THEN 0 ELSE unsorted END,
+    `UPDATE files SET folder_path = ?, stored_name = ?, drive_file_id = ?, drive_link = COALESCE(?, drive_link), root_ref = COALESCE(?, root_ref), unsorted = CASE WHEN ? THEN 0 ELSE unsorted END,
      manual = CASE WHEN ? THEN 1 ELSE manual END, classified_by = CASE WHEN ? THEN 'manual' ELSE classified_by END, updated_at = datetime('now') WHERE id = ?`,
   )
-    .bind(folderPath, moved.name, moved.ref, moved.link, opts.manual ? 1 : 0, opts.manual ? 1 : 0, opts.manual ? 1 : 0, file.id)
+    .bind(folderPath, moved.name, moved.ref, moved.link, moved.root ?? null, opts.manual ? 1 : 0, opts.manual ? 1 : 0, opts.manual ? 1 : 0, file.id)
     .run();
   if (opts.record !== false) {
     await env.DB.prepare(

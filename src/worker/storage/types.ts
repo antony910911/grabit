@@ -20,12 +20,15 @@ export interface UploadResult {
   hash: string | null; // 「演算法:值」，例如 md5:xxx、sha256:xxx
   size: number | null;
   link: string | null;
+  /** 檔案所在的專屬根資料夾 ID（目前只有 Google Drive 使用） */
+  root?: string | null;
 }
 
 export interface MoveResult {
   ref: string;
   name: string;
   link: string | null;
+  root?: string | null;
 }
 
 export type Body = ReadableStream<Uint8Array> | ArrayBuffer;

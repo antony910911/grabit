@@ -161,6 +161,10 @@ export interface Storage {
   files: number;
   bytes: number;
   config: { url?: string; username?: string };
+  folderLink: string | null;
+  share: 'private' | 'members' | 'anyone' | null;
+  shareError: string | null;
+  filesOutside: number;
 }
 
 export interface Stats {
