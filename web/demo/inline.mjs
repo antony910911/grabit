@@ -13,3 +13,11 @@ for (const f of readdirSync(join(dir, 'assets'))) {
 }
 writeFileSync(join(dir, 'grabit-demo.html'), html);
 console.log('grabit-demo.html', (html.length / 1024).toFixed(0), 'KB', /src="\/assets/.test(html) ? '(有未內嵌的檔案!)' : '');
+
+// 發佈成 Artifact 用的版本：外層 <html>/<head>/<body> 由發佈平台提供，這裡只留內容
+const title = html.match(/<title>.*?<\/title>/)[0];
+const styles = [...html.matchAll(/<style>[\s\S]*?<\/style>/g)].map((m) => m[0]).join('\n');
+const body = html.slice(html.indexOf('<body>') + 6, html.lastIndexOf('</body>'));
+const scripts = [...html.matchAll(/<script type="module">[\s\S]*?<\/script>/g)].map((m) => m[0]).join('\n');
+const bodyNoScripts = body.replace(/<script type="module">[\s\S]*?<\/script>/g, '').trim();
+writeFileSync(join(dir, 'grabit-demo.artifact.html'), `${title}\n${styles}\n${bodyNoScripts}\n${scripts}\n`);

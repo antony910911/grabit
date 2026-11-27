@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api, type FileItem, type Project, type Sources, type Stats } from '../api';
 import { Empty, ErrorBox, FileIcon, FolderInput, Icon, Loading, ProjectBadge, Sheet, SourceIcon, StatusBadge, Switch, TagChip } from '../components';
 import { FileSheet, useAfterMove } from '../FileSheet';
-import { canEdit, currentUrl, formatTime, replaceUrl, useLoad, useMe, useToast } from '../lib';
+import { ask, canEdit, currentUrl, formatTime, replaceUrl, useLoad, useMe, useToast } from '../lib';
 
 const TABS = [
   { key: 'all', label: '全部' },
@@ -213,7 +213,7 @@ export function Files() {
   };
 
   const batchDelete = async () => {
-    if (!confirm(`確定要刪除 ${selected.size} 個檔案？雲端上的檔案會移到垃圾桶（可以救回）。`)) return;
+    if (!(await ask(`確定要刪除 ${selected.size} 個檔案？雲端上的檔案會移到垃圾桶（可以救回）。`))) return;
     try {
       const r = await api<{ deleted: number }>('/files/delete', { method: 'POST', json: { ids: [...selected] } });
       toast(`已刪除 ${r.deleted} 個檔案`);

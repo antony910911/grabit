@@ -108,6 +108,38 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// ---------- 確認對話框（瀏覽器內建的 confirm() 在部分環境會被擋掉） ----------
+type ConfirmFn = (message: string, okLabel?: string) => Promise<boolean>;
+let confirmImpl: ConfirmFn = async (m) => window.confirm(m);
+export const ask = (message: string, okLabel?: string) => confirmImpl(message, okLabel);
+
+export function ConfirmHost() {
+  const [req, setReq] = useState<{ message: string; ok: string; resolve: (v: boolean) => void } | null>(null);
+  useEffect(() => {
+    confirmImpl = (message, okLabel = '確定') => new Promise<boolean>((resolve) => setReq({ message, ok: okLabel, resolve }));
+  }, []);
+  if (!req) return null;
+  const done = (v: boolean) => {
+    req.resolve(v);
+    setReq(null);
+  };
+  return (
+    <div className="overlay" style={{ zIndex: 70 }} onClick={() => done(false)}>
+      <div className="sheet" role="alertdialog" aria-modal="true" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+        <p style={{ margin: '8px 0 4px', fontSize: 15, lineHeight: 1.6 }}>{req.message}</p>
+        <div className="sheet-actions">
+          <button className="btn" onClick={() => done(false)} autoFocus>
+            取消
+          </button>
+          <button className="btn primary" onClick={() => done(true)}>
+            {req.ok}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------- 資料載入 ----------
 export function useLoad<T>(fn: () => Promise<T>, deps: unknown[]) {
   const [data, setData] = useState<T | null>(null);

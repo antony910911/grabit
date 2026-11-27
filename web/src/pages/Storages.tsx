@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, type Storage } from '../api';
 import { Empty, ErrorBox, Icon, Loading, Sheet } from '../components';
-import { currentUrl, formatBytes, replaceUrl, useLoad, useMe, useToast } from '../lib';
+import { ask, currentUrl, formatBytes, replaceUrl, useLoad, useMe, useToast } from '../lib';
 
 const LOGO: Record<string, [string, string]> = {
   gdrive: ['#1a73e8', 'G'],
@@ -209,7 +209,7 @@ function EditStorage({ storage, onClose, onDone }: { storage: Storage; onClose: 
     }
   };
   const remove = async () => {
-    if (!confirm(`移除「${storage.name}」？雲端上的檔案不會被刪除。`)) return;
+    if (!(await ask(`移除「${storage.name}」？雲端上的檔案不會被刪除。`))) return;
     try {
       await api(`/storages/${storage.id}`, { method: 'DELETE' });
       onDone();

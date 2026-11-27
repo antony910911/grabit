@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type Group, type Project, type Rule, type Suggestion } from '../api';
 import { ErrorBox, Icon, Loading, Sheet, Switch } from '../components';
-import { canEdit, useLoad, useMe, useToast } from '../lib';
+import { ask, canEdit, useLoad, useMe, useToast } from '../lib';
 
 const MATCH_LABEL: Record<Rule['match_type'], string> = {
   keywords: '檔名包含關鍵字',
@@ -293,7 +293,7 @@ function RuleEditor({ draft, groups, onClose, onSaved }: { draft: Draft; groups:
   };
 
   const remove = async () => {
-    if (!d.id || !confirm(`確定刪除規則「${d.name}」？已歸檔的檔案不會被移動。`)) return;
+    if (!d.id || !(await ask(`確定刪除規則「${d.name}」？已歸檔的檔案不會被移動。`))) return;
     try {
       await api(`/rules/${d.id}`, { method: 'DELETE' });
       toast('規則已刪除');

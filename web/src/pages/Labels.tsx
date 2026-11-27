@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api, type Project, type Tag } from '../api';
 import { Empty, ErrorBox, Icon, Loading, ProjectBadge, Sheet } from '../components';
-import { canEdit, Link, useLoad, useMe, useToast } from '../lib';
+import { ask, canEdit, Link, useLoad, useMe, useToast } from '../lib';
 
 const COLORS = ['#4a6fa5', '#2c7a52', '#a75a1d', '#a2382f', '#6a4a97', '#2f8a8a', '#8a6d1f', '#697181'];
 
@@ -26,7 +26,7 @@ export function Labels() {
     }
   };
   const deleteProject = async () => {
-    if (!editP?.id || !confirm(`刪除專案「${editP.name}」？檔案不會被刪除，只是不再屬於這個專案。`)) return;
+    if (!editP?.id || !(await ask(`刪除專案「${editP.name}」？檔案不會被刪除，只是不再屬於這個專案。`))) return;
     await api(`/projects/${editP.id}`, { method: 'DELETE' });
     setEditP(null);
     projects.reload();
@@ -43,7 +43,7 @@ export function Labels() {
     }
   };
   const deleteTag = async () => {
-    if (!editT || !confirm(`刪除標籤「${editT.name}」？`)) return;
+    if (!editT || !(await ask(`刪除標籤「${editT.name}」？`))) return;
     await api(`/tags/${editT.id}`, { method: 'DELETE' });
     setEditT(null);
     tags.reload();

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type FileDetail, type Project, type Suggestion } from './api';
 import { ErrorBox, FileIcon, FolderInput, Icon, Loading, ProjectBadge, Sheet, SourceIcon, StatusBadge, TagChip } from './components';
-import { canEdit, formatBytes, formatTime, lineDiff, navigate, useLoad, useMe, useToast } from './lib';
+import { ask, canEdit, formatBytes, formatTime, lineDiff, navigate, useLoad, useMe, useToast } from './lib';
 
 const HOW: Record<string, string> = { rule: '檔名規則', ai: 'AI 判讀內容', group: '群組預設資料夾', manual: '手動調整', none: '沒有符合的規則' };
 
@@ -97,7 +97,7 @@ export function FileSheet({ id, folders, onClose, onChanged }: { id: number; fol
 
   const remove = () =>
     run(async () => {
-      if (!confirm('確定要刪除這個檔案？雲端上的檔案會移到垃圾桶／資源回收筒（可以救回）。')) return;
+      if (!(await ask('確定要刪除這個檔案？雲端上的檔案會移到垃圾桶／資源回收筒（可以救回）。'))) return;
       await api(`/files/${current}`, { method: 'DELETE' });
       toast('已刪除');
       onChanged();
@@ -281,14 +281,16 @@ export function FileSheet({ id, folders, onClose, onChanged }: { id: number; fol
                 onClick={async () => {
                   // 用 fetch 取得內容再開新分頁，WebDAV／展示版這類沒有公開連結的空間也能預覽
                   const w = window.open('', '_blank');
+                  if (!w) {
+                    toast('這個環境不允許開啟新分頁，請在 GrabIt 網站上預覽', 'error');
+                    return;
+                  }
                   try {
                     const res = await fetch(preview);
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    const url = URL.createObjectURL(await res.blob());
-                    if (w) w.location.href = url;
-                    else location.href = url;
+                    w.location.href = URL.createObjectURL(await res.blob());
                   } catch (e) {
-                    w?.close();
+                    w.close();
                     toast(`無法預覽：${(e as Error).message}`, 'error');
                   }
                 }}

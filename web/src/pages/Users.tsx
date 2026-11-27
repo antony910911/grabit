@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api, type Group, type Role, type User } from '../api';
 import { Empty, ErrorBox, Icon, Loading, Sheet } from '../components';
-import { formatTime, useLoad, useMe, useToast } from '../lib';
+import { ask, formatTime, useLoad, useMe, useToast } from '../lib';
 
 const ROLE: Record<Role, [string, string]> = {
   admin: ['管理員', '所有群組、規則、雲端與成員設定'],
@@ -92,7 +92,7 @@ function UserSheet({ user, groups, self, onClose, onSaved }: { user: Partial<Use
     }
   };
   const remove = async () => {
-    if (!confirm(`移除成員 ${u.email}？`)) return;
+    if (!(await ask(`移除成員 ${u.email}？`))) return;
     try {
       await api(`/users/${encodeURIComponent(u.email)}`, { method: 'DELETE' });
       onSaved();

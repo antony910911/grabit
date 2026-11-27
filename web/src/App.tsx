@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type Me } from './api';
 import { Brand, Icon, Sheet } from './components';
-import { Link, MeCtx, navigate, usePath, useToast } from './lib';
+import { ConfirmHost, Link, MeCtx, navigate, usePath, useToast } from './lib';
 import { Dashboard } from './pages/Dashboard';
 import { Files } from './pages/Files';
 import { Rules } from './pages/Rules';
@@ -222,6 +222,7 @@ export function App() {
         </nav>
       </div>
       {simulate && window.__grabitDemo && <Simulator onClose={() => setSimulate(false)} />}
+      <ConfirmHost />
     </MeCtx.Provider>
   );
 }

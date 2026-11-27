@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api';
 import { Empty, ErrorBox, Icon, Loading } from '../components';
-import { canEdit, formatTime, Link, useLoad, useMe, useToast } from '../lib';
+import { ask, canEdit, formatTime, Link, useLoad, useMe, useToast } from '../lib';
 
 interface LogRow {
   id: number;
@@ -32,7 +32,7 @@ export function Logs() {
   const ops = useLoad(() => (tab === 'ops' ? api<{ items: Op[] }>('/operations') : Promise.resolve({ items: [] as Op[] })), [tab]);
 
   const undo = async (op: Op) => {
-    if (!confirm(`復原「${op.description}」？`)) return;
+    if (!(await ask(`復原「${op.description}」？`))) return;
     try {
       const r = await api<{ undone: number; errors: string[] }>(`/operations/${op.batch_id}/undo`, { method: 'POST', json: {} });
       toast(r.errors.length ? `復原 ${r.undone} 個，${r.errors.length} 個失敗：${r.errors[0]}` : `已復原 ${r.undone} 個操作`, r.errors.length ? 'error' : 'ok');
