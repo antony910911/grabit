@@ -147,7 +147,7 @@ async function seed() {
     lineEvent('Cadmin', '舊報表.pdf', '行政助理', 1, { expired: true }),
   ]);
   await send([lineEvent('Cyeast', 'GC分析_轉傳.pdf', '小華', 0, { body: same })]);
-  await ingestBuffer(env, { groupId: 'email:files@grabit.example', groupType: 'email', groupName: 'Email：files@grabit.example', name: '報價單_GC管柱.pdf', mime: 'application/pdf', data: enc.encode(fakeContent('報價單_GC管柱.pdf')).buffer as ArrayBuffer, sender: '供應商 王先生', key: 'email:1' });
+  await ingestBuffer(env, { groupId: 'email:files@grabit.example', groupType: 'email', groupName: 'Email：files@grabit.example', name: '報價單_GC管柱.pdf', mime: 'application/pdf', data: enc.encode(fakeContent('報價單_GC管柱.pdf')).buffer as ArrayBuffer, sender: '供應商 王先生', senderId: 'wang@supplier.example', key: 'email:1' });
 
   // 手動把兩個 SOP 搬到同一個資料夾 → 系統學到「SOP」規則建議
   const sop = ((await call('/files?q=SOP')).items as { id: number }[]).map((f) => f.id);

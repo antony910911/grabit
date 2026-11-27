@@ -3,8 +3,8 @@ import { Hono } from 'hono';
 import { getGroup, getSetting, listRules, log, setSetting, deleteSetting } from '../db';
 import { canSeeGroup, fileScope, type Role } from '../permissions';
 import { classify, renderPath, splitList, templateVars, type MatchType, type Rule } from '../rules';
-import { askEngine, WORKERS_MODELS, DEFAULT_GEMINI_MODEL } from '../ai';
-import { aiStatus, loadAiSettings, queueAi, resumeAi, DEFAULT_FEATURES, type AiFeatures } from '../ai-job';
+import { AiQuotaError, AiTransientError, WORKERS_MODELS, DEFAULT_GEMINI_MODEL } from '../ai';
+import { actualUnits, aiStatus, askEngineFor, isExternal, loadAiSettings, pause, pausedUntil, queueAi, refundUsage, reserveUsage, resumeAi, settleUsage, DEFAULT_FEATURES, type AiFeatures } from '../ai-job';
 import { hasFts, searchForAi } from '../search';
 import { STORAGE_LABEL, storageReady, type StorageRow, type StorageType } from '../storage';
 import { oauthConfigured } from '../storage/oauth';
@@ -51,7 +51,7 @@ manage.get('/me', async (c) => {
     name: u.name,
     role: u.role,
     allGroups: u.allGroups,
-    aiAvailable: !!(await askEngine(c.env)),
+    aiAvailable: !!askEngineFor(c.env, await loadAiSettings(c.env)),
     fullText: await hasFts(c.env),
     semantic: !!(c.env.AI && c.env.VECTORIZE),
     demo: !!c.env.DEMO_AI,
@@ -334,7 +334,11 @@ manage.get('/projects', async (c) => {
   const r = await c.env.DB.prepare(`SELECT p.*, (SELECT COUNT(*) FROM files f WHERE f.project_id = p.id AND f.status = 'done' AND ${scope.sql}) AS count FROM projects p ORDER BY p.name`)
     .bind(...scope.binds)
     .all();
-  return c.json({ items: r.results });
+  // 看板「未分專案」欄的總數
+  const none = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM files f WHERE f.project_id IS NULL AND f.status = 'done' AND ${scope.sql}`)
+    .bind(...scope.binds)
+    .first<{ n: number }>();
+  return c.json({ items: r.results, unassigned: none?.n ?? 0 });
 });
 
 manage.post('/projects', async (c) => {
@@ -879,25 +883,56 @@ manage.post('/ask', async (c) => {
   const user = c.get('user');
   const { question } = await readJson<{ question: string }>(c);
   if (!question?.trim()) throw bad('請輸入問題');
-  const engine = await askEngine(c.env);
-  if (!engine?.ask) throw bad('「問 AI」需要 Claude：請設定 ANTHROPIC_API_KEY。免費的 AI 文件判讀不包含跨文件問答');
-  const scope = fileScope(user);
+  const s = await loadAiSettings(c.env);
+  const engine = askEngineFor(c.env, s);
+  if (!engine?.ask) throw bad('「問 AI」還沒啟用：請管理員到「設定 → 一般 → AI 文件判讀」選擇 AI 引擎');
+  // 用 Gemini 免費版時，只查允許送交外部 AI 的群組（檔案摘要與內文會送到 Google）
+  const external = isExternal(engine.provider) && s.externalNeedsConsent;
+  const base = fileScope(user);
+  const scope = external ? { sql: `(${base.sql}) AND f.group_id IN (SELECT id FROM groups WHERE ai_external = 1)`, binds: base.binds } : base;
+  const free = engine.provider === 'workers' || engine.provider === 'gemini';
+  // 和文件判讀共用每天的免費額度
+  if (free && (await pausedUntil(c.env))) throw bad('今天的 AI 免費額度已用完，明天會自動恢復（檔案歸檔不受影響）');
+  const reservation = free ? await reserveUsage(c.env, engine.provider, engine.model, s, new Date(), 'ask') : null;
+  if (reservation && !reservation.ok) throw bad(reservation.why === 'count' ? `今天的 AI 使用次數已達上限（${s.dailyLimit} 次），明天會自動恢復` : '今天的 AI 免費額度已用完，明天會自動恢復');
   const seen = new Set<number>();
-  const answer = await engine.ask(question.trim().slice(0, 1000), {
-    search: async (args) => {
-      const hits = await searchForAi(c.env, scope, args);
-      hits.forEach((h) => seen.add(h.id));
-      return hits;
-    },
-    read: async (id) => {
-      const f = await c.env.DB.prepare(`SELECT f.id, COALESCE(f.stored_name, f.original_name) AS name, f.ai_summary AS summary, f.content_text AS text, f.group_id FROM files f WHERE f.id = ? AND f.status = 'done' AND ${scope.sql}`)
-        .bind(id, ...scope.binds)
-        .first<{ name: string; summary: string | null; text: string | null }>();
-      if (!f) return null;
-      seen.add(id);
-      return { name: f.name, summary: f.summary, text: (f.text ?? '').slice(0, 8000) };
-    },
-  });
+  const used = { input: 0, output: 0, reported: false };
+  let answer: string;
+  try {
+    answer = await engine.ask(
+      question.trim().slice(0, 500),
+      {
+        search: async (args) => {
+          const hits = await searchForAi(c.env, scope, args);
+          hits.forEach((h) => seen.add(h.id));
+          return hits;
+        },
+        read: async (id) => {
+          const f = await c.env.DB.prepare(`SELECT f.id, COALESCE(f.stored_name, f.original_name) AS name, f.ai_summary AS summary, f.content_text AS text, f.group_id FROM files f WHERE f.id = ? AND f.status = 'done' AND ${scope.sql}`)
+            .bind(id, ...scope.binds)
+            .first<{ name: string; summary: string | null; text: string | null }>();
+          if (!f) return null;
+          seen.add(id);
+          return { name: f.name, summary: f.summary, text: (f.text ?? '').slice(0, 8000) };
+        },
+      },
+      (u) => {
+        used.input += u.input;
+        used.output += u.output;
+        used.reported = true;
+      },
+    );
+  } catch (e) {
+    if (reservation?.ok) await refundUsage(c.env, engine.provider, reservation);
+    if (e instanceof AiQuotaError) {
+      await pause(c.env, e.resetAt, e.message);
+      throw bad(`${e.message}，明天會自動恢復`);
+    }
+    if (e instanceof AiTransientError) throw bad('AI 暫時忙碌，請過一分鐘再試');
+    throw e;
+  }
+  if (reservation?.ok) await settleUsage(c.env, engine.provider, reservation, used.reported ? actualUnits(engine.provider, engine.model, used) : null);
+  if (external) answer += '\n\n（使用 Gemini 免費版時，只會查詢允許送交外部 AI 的群組。）';
   const ids = [...new Set([...answer.matchAll(/\[#(\d+)\]/g)].map((m) => Number(m[1])))].filter((id) => seen.has(id));
   const filesRows = ids.length
     ? (

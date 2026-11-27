@@ -57,12 +57,12 @@ export function Ask() {
       <div className="page-head">
         <div>
           <h1>問 AI</h1>
-          <p>用一句話找檔案、問內容。只會搜尋你有權限看到的群組。</p>
+          <p>用一句話找檔案、問內容。只會搜尋你有權限看到的群組；回答只根據找到的檔案，每次會用掉一點每天的 AI 免費額度。</p>
         </div>
       </div>
       {me && !me.aiAvailable && (
         <div className="notice warn">
-          AI 功能尚未啟用。管理員需要設定 ANTHROPIC_API_KEY，並在 <Link to="/settings">系統設定</Link> 開啟 AI。
+          「問 AI」還沒啟用。請管理員到 <Link to="/settings">設定 → 一般 → AI 文件判讀</Link> 選擇 AI 引擎（免費的 Workers AI 就可以）。
         </div>
       )}
       <div className="chat" style={{ marginBottom: 16 }}>

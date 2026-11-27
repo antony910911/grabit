@@ -426,6 +426,58 @@ try {
   check('選「不使用 AI」時照常歸檔，AI 標成略過', a7?.status === 'done' && a7.ai_status === 'skipped' && /關閉/.test(a7.ai_error ?? ''), JSON.stringify([a7?.status, a7?.ai_status, a7?.ai_error]));
   await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ai: { provider: 'workers' } }) });
 
+  // ---------- 問 AI（免費引擎：拆搜尋條件 → 依權限搜尋 → 依找到的檔案回答） ----------
+  check('選了免費的 Workers AI，「問 AI」就能用', (await api('/api/me')).body.aiAvailable === true);
+  let calls0 = (await aiCalls()).length;
+  const used0 = (await api('/api/settings')).body.ai.status.today.count;
+  r = await post('/api/ask', { question: '幫我找 Farnesene 的 GC 分析' });
+  let newCalls = (await aiCalls()).slice(calls0);
+  check('問 AI：兩次模型呼叫，回答附上找到的檔案', r.status === 200 && newCalls.length === 2 && /<document id="\d+"/.test(newCalls[1].prompt) && r.body.files.length === 1 && r.body.answer.includes(`[#${r.body.files[0].id}]`), JSON.stringify([r.status, r.body, newCalls.length]));
+  check('模型編造的檔案編號不會變成連結', !r.body.files.some((f) => f.id === 999999));
+  check('問 AI 和文件判讀共用每天的免費額度', (await api('/api/settings')).body.ai.status.today.count === used0 + 1);
+  calls0 = (await aiCalls()).length;
+  r = await post('/api/ask', { question: '有沒有 Zzyzx 的資料' });
+  check('找不到檔案時只呼叫一次模型（省額度）', r.status === 200 && /找不到/.test(r.body.answer) && (await aiCalls()).length === calls0 + 1, JSON.stringify(r.body));
+  await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ai: { dailyLimit: (await api('/api/settings')).body.ai.status.today.count } }) });
+  r = await post('/api/ask', { question: '再問一次 Farnesene' });
+  check('超過每日上限時問 AI 會提示明天恢復', r.status === 400 && /上限/.test(r.body.error ?? ''), JSON.stringify(r.body));
+  await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ai: { dailyLimit: 100, provider: 'gemini' } }) });
+  r = await post('/api/ask', { question: '幫我找 Farnesene 的 GC 分析' });
+  check('用 Gemini 時只查允許外部 AI 的群組', r.status === 200 && /找不到/.test(r.body.answer) && /允許送交外部 AI/.test(r.body.answer), JSON.stringify(r.body));
+  await patch('/api/groups/Cgroup1', { ai_external: true });
+  r = await post('/api/ask', { question: '幫我找 Farnesene 的 GC 分析' });
+  check('群組允許後，Gemini 可以回答', r.status === 200 && r.body.files.length === 1, JSON.stringify(r.body));
+  await patch('/api/groups/Cgroup1', { ai_external: false });
+  await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ai: { provider: 'workers' } }) });
+
+  // ---------- 上傳者篩選與虛擬檢視 ----------
+  const evU = (id, fileName, group, userId) => ({ ...ev(id, 'file', fileName, group), source: { type: 'group', groupId: group, userId } });
+  const driveBefore = await drive();
+  await webhook([evU('u1', '上傳者甲_群組二.pdf', 'Cgroup2', 'Uuser1'), evU('u2', '同名的另一人.pdf', 'Cgroup1', 'Uuser2'), evU('u3', '只在群組二.pdf', 'Cgroup2', 'Uuser3')]);
+  for (const n of ['上傳者甲_群組二.pdf', '同名的另一人.pdf', '只在群組二.pdf']) await waitAi(n);
+  let ups = (await api('/api/uploaders')).body;
+  const me1 = ups.items.find((u) => u.key === 'line:Uuser1');
+  const me2 = ups.items.find((u) => u.key === 'line:Uuser2');
+  check('上傳者清單依 LINE User ID 區分，同名的兩個人不會合併', !!me1 && !!me2 && me1.name === '小明' && me2.name === '小明' && me1.count > me2.count && me1.groups === 2, JSON.stringify(ups.items.map((u) => [u.key, u.name, u.count, u.groups])));
+  r = await api(`/api/files?limit=200&uploader=${encodeURIComponent('line:Uuser1')}`);
+  check('點選上傳者：跨群組的檔案都在，沒有別人的', r.body.items.some((f) => f.original_name === '上傳者甲_群組二.pdf') && r.body.items.some((f) => f.group_id === 'Cgroup1') && r.body.items.every((f) => f.uploader_key === 'line:Uuser1'), JSON.stringify(r.body.items.map((f) => [f.original_name, f.group_id])));
+  check('虛擬檢視不會移動或複製雲端上的檔案', (await drive()).filter((p) => driveBefore.includes(p)).length === driveBefore.length && (await drive()).length === driveBefore.length + 3);
+  r = await api(`/api/files?limit=200&uploader=${encodeURIComponent('line:Uuser1')}&group=Cgroup2`);
+  check('上傳者可以和群組交叉篩選', r.body.items.length === 1 && r.body.items[0].original_name === '上傳者甲_群組二.pdf', JSON.stringify(r.body.items.map((f) => f.original_name)));
+  r = await api(`/api/files?limit=200&uploader=${encodeURIComponent('line:Uuser1')}&project=${proj2}`);
+  check('上傳者可以和專案交叉篩選', r.body.items.every((f) => f.uploader_key === 'line:Uuser1' && f.project_id === proj2), JSON.stringify(r.body.items.map((f) => f.original_name)));
+  r = await patch(`/api/uploaders/${encodeURIComponent('line:Uuser2')}`, { alias: '小明（品管）' });
+  const u2file = (await api('/api/files?limit=200')).body.items.find((f) => f.original_name === '同名的另一人.pdf');
+  ups = (await api('/api/uploaders')).body;
+  check('設定別名後，舊檔案用新名稱顯示，另一個同名者不受影響', r.status === 200 && u2file?.uploader_name === '小明（品管）' && ups.items.find((u) => u.key === 'line:Uuser1')?.name === '小明', JSON.stringify([r.body, u2file?.uploader_name]));
+  r = await api(`/api/uploaders/${encodeURIComponent('line:Uuser3')}/pin`, { method: 'PUT', body: JSON.stringify({ pinned: true }) });
+  ups = (await api('/api/uploaders')).body;
+  check('釘選的上傳者排在最上面', r.status === 200 && ups.items[0].key === 'line:Uuser3' && ups.items[0].pinned === true, JSON.stringify(ups.items.map((u) => [u.key, u.pinned])));
+  r = await api('/api/uploaders?q=品管');
+  check('可以搜尋上傳者（包含別名）', r.body.items.length === 1 && r.body.items[0].key === 'line:Uuser2', JSON.stringify(r.body.items));
+  const upFile = (await api('/api/files?limit=200')).body.items.find((f) => f.source === 'upload');
+  check('手動上傳的檔案用 GrabIt 帳號當上傳者', upFile?.uploader_key === 'user:admin@example.com', JSON.stringify(upFile && [upFile.uploader_key, upFile.uploader_name]));
+
   // ---------- 成員登入、權限、登出與撤銷 ----------
   const adminCookie = COOKIE;
   await post('/api/users', { email: 'Editor@Example.com', role: 'editor', groups: ['Cgroup1'] });
@@ -435,6 +487,8 @@ try {
   check('檢視者不能修改', (await post('/api/projects', { name: '不該建立' })).status === 403);
   check('檢視者看不到未授權群組的檔案', (await api('/api/files')).body.items.length === 0);
   check('檢視者不能進入成員管理', (await api('/api/users')).status === 403);
+  check('檢視者沒有授權群組時看不到任何上傳者', (await api('/api/uploaders')).body.items.length === 0 && (await api('/api/uploaders')).body.unknown === 0);
+  check('檢視者不能改上傳者的名稱', (await patch(`/api/uploaders/${encodeURIComponent('line:Uuser1')}`, { alias: 'x' })).status === 403);
   check('檢視者不能重新分析或改 AI 設定', (await post('/api/ai/backfill', {})).status === 403 && (await post('/api/ai/resume', {})).status === 403);
   check('檢視者不能看或改系統設定', (await api('/api/settings')).status === 403 && (await api('/api/settings', { method: 'PUT', body: '{"ai_enabled":"0"}' })).status === 403);
   const vst = (await api('/api/storages')).body;
@@ -448,6 +502,11 @@ try {
   COOKIE = pair(E.session);
   check('外觀設定是每個人自己的', (await api('/api/me')).body.prefs?.palette === 'indigo');
   check('編輯者只看得到被授權的群組', (await api('/api/files')).body.items.every((f) => f.group_id === 'Cgroup1') && (await api('/api/files')).body.items.length > 0);
+  // 上傳者清單與數量只算看得到的檔案
+  const eUps = (await api('/api/uploaders')).body;
+  check('成員只看到被授權群組裡的上傳者與數量', !eUps.items.some((u) => u.key === 'line:Uuser3') && eUps.items.find((u) => u.key === 'line:Uuser1')?.groups === 1, JSON.stringify(eUps.items.map((u) => [u.key, u.count, u.groups])));
+  check('看不到的上傳者不能改名或釘選', (await patch(`/api/uploaders/${encodeURIComponent('line:Uuser3')}`, { alias: 'x' })).status === 404 && (await api(`/api/uploaders/${encodeURIComponent('line:Uuser3')}/pin`, { method: 'PUT', body: '{"pinned":true}' })).status === 404);
+  check('依上傳者篩選也不會看到未授權群組的檔案', (await api(`/api/files?limit=200&uploader=${encodeURIComponent('line:Uuser1')}`)).body.items.every((f) => f.group_id === 'Cgroup1'));
   // 雲端連結只給打得開的人；其他人用 GrabIt 下載
   const ef = (await api('/api/files')).body.items.find((f) => f.status === 'done');
   check('雲端沒分享給他時，不給「在雲端開啟」的連結', !!ef && ef.drive_link === null && (await api(`/api/files/${ef.id}`)).body.drive_link === null, JSON.stringify(ef));

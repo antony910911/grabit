@@ -59,6 +59,9 @@ const CONTENT: Record<string, string> = {
   a5: 'AI_HIGH 第二份',
   a6: 'AI_GEMINI 外部 AI 測試',
   a7: 'AI 關閉時的檔案',
+  u1: 'uploader one in group two',
+  u2: 'uploader two same name',
+  u3: 'uploader three only group two',
 };
 
 // ---------- 假的 Workers AI（env.AI） ----------
@@ -71,11 +74,26 @@ function fakeAnswer(prompt: string): Record<string, unknown> {
   if (prompt.includes('AI_EVIL')) return { ...base, summary: '可疑的文件', folder: '../../系統/../待分類', project: '不存在的專案', confidence: 0.99, tags: Array.from({ length: 20 }, (_, i) => `標籤${i}`) };
   return base;
 }
+/** 「問 AI」的兩個步驟：拆搜尋條件（回 JSON）、依找到的檔案回答（回文字，引用第一份檔案） */
+function fakeAsk(prompt: string): unknown {
+  if (prompt.includes('搜尋助理')) {
+    const words = prompt.split('\n').slice(1).join(' ').match(/[A-Za-z]{3,}/g) ?? ['找不到的詞'];
+    return { keywords: words.slice(0, 2), group: '', project: '', tag: '', from: '', to: '' };
+  }
+  if (prompt.includes('查詢助理')) {
+    const id = prompt.match(/<document id="(\d+)"/)?.[1];
+    return id ? `找到了：測試檔案 [#${id}]，另外 [#999999] 是不存在的編號。` : '沒有檔案';
+  }
+  return null;
+}
+
 export const fakeAi = {
   async run(model: string, input: { messages: { role: string; content: string }[]; response_format?: unknown }) {
     const prompt = input.messages.map((m) => m.content).join('\n');
     aiCalls.push({ model, prompt });
     if (prompt.includes('AI_QUOTA')) throw new Error('AiError: 4006: you have used up your daily free allocation of 10,000 neurons');
+    const ask = fakeAsk(prompt);
+    if (ask !== null) return { response: ask, usage: { prompt_tokens: 900, completion_tokens: 80 } };
     return { response: fakeAnswer(prompt), usage: { prompt_tokens: 1200, completion_tokens: 150 } };
   },
   async toMarkdown(files: { name: string; blob: Blob }[]) {
@@ -183,9 +201,12 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     if (req.headers.get('x-goog-api-key') !== 'x') return json({ error: { message: 'API key not valid', status: 'INVALID_ARGUMENT' } }, 400);
     if (p === '/v1beta/models') return json({ models: [{ name: 'models/gemini-flash-latest', displayName: 'Gemini Flash', supportedGenerationMethods: ['generateContent'] }] });
     if (p.endsWith(':generateContent')) {
-      const body = (await req.json()) as { contents: { parts: { text?: string; inline_data?: unknown }[] }[] };
+      const body = (await req.json()) as { systemInstruction?: { parts: { text: string }[] }; contents: { parts: { text?: string; inline_data?: unknown }[] }[] };
       const prompt = body.contents.flatMap((c) => c.parts.map((x) => x.text ?? '')).join('\n');
-      aiCalls.push({ model: `gemini:${p.split('/').pop()}`, prompt });
+      const system = body.systemInstruction?.parts.map((x) => x.text).join('\n') ?? '';
+      aiCalls.push({ model: `gemini:${p.split('/').pop()}`, prompt: `${system}\n${prompt}` });
+      const ask = fakeAsk(`${system}\n${prompt}`);
+      if (ask !== null) return json({ candidates: [{ content: { parts: [{ text: typeof ask === 'string' ? ask : JSON.stringify(ask) }] }, finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 500, candidatesTokenCount: 60 } });
       const ans = { ...fakeAnswer(prompt.replace('AI_GEMINI', 'AI_HIGH')), summary: 'Gemini 測試摘要' };
       return json({ candidates: [{ content: { parts: [{ text: JSON.stringify(ans) }] }, finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 800, candidatesTokenCount: 120 } });
     }

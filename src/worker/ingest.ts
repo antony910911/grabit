@@ -1,7 +1,7 @@
 // Email 附件與手動上傳：內容已經在記憶體中，直接走同一套歸檔流程
 import PostalMime from 'postal-mime';
 import type { Env } from './env';
-import { getGroup, getSetting, groupAccepts, log } from './db';
+import { getGroup, getSetting, groupAccepts, log, touchUploader } from './db';
 import { splitExt } from './rules';
 import { archiveFile, runWithStatus, type Outcome } from './processor';
 
@@ -13,6 +13,8 @@ export interface IngestInput {
   mime: string;
   data: ArrayBuffer;
   sender: string | null;
+  /** 上傳者的唯一身分：Email 的寄件地址、手動上傳的 GrabIt 帳號 */
+  senderId?: string | null;
   key: string; // 唯一鍵，避免重複處理
   folder?: string | null;
   projectId?: number | null;
@@ -28,12 +30,15 @@ export async function ingestBuffer(env: Env, input: IngestInput): Promise<{ file
   if (group && !group.enabled) return { fileId: null, outcome: null };
   const ext = splitExt(input.name).ext;
   const accepted = groupAccepts(group, ext, 'file');
+  const senderId = input.senderId?.trim().toLowerCase() || null;
+  const uploaderKey = senderId ? `${input.groupType === 'email' ? 'email' : 'user'}:${senderId}` : null;
   const r = await env.DB.prepare(
-    `INSERT OR IGNORE INTO files (line_message_id, group_id, sender_name, message_type, original_name, ext, size, received_at, source, status)
-     VALUES (?, ?, ?, 'file', ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR IGNORE INTO files (line_message_id, group_id, sender_id, sender_name, message_type, original_name, ext, size, received_at, source, status, uploader_key)
+     VALUES (?, ?, ?, ?, 'file', ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(input.key, input.groupId, input.sender, input.name, ext, input.data.byteLength, new Date().toISOString(), input.groupType, accepted ? 'pending' : 'skipped')
+    .bind(input.key, input.groupId, input.senderId ?? null, input.sender, input.name, ext, input.data.byteLength, new Date().toISOString(), input.groupType, accepted ? 'pending' : 'skipped', uploaderKey)
     .run();
+  if (r.meta.changes) await touchUploader(env, uploaderKey, input.groupType === 'email' ? 'email' : 'user', input.sender);
   if (!r.meta.changes || !accepted) return { fileId: null, outcome: null };
   const fileId = Number(r.meta.last_row_id);
   const outcome = await runWithStatus(env, fileId, 6, () =>
@@ -79,7 +84,8 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
       name: a.filename!,
       mime: a.mimeType,
       data: data as ArrayBuffer,
-      sender: email.from?.name || message.from,
+      sender: email.from?.name || email.from?.address || message.from,
+      senderId: email.from?.address || message.from,
       key: `email:${msgId}:${i}`,
     });
   }
