@@ -348,8 +348,17 @@ try {
   check('檢視者不能修改', (await post('/api/projects', { name: '不該建立' })).status === 403);
   check('檢視者看不到未授權群組的檔案', (await api('/api/files')).body.items.length === 0);
   check('檢視者不能進入成員管理', (await api('/api/users')).status === 403);
+  check('檢視者不能看或改系統設定', (await api('/api/settings')).status === 403 && (await api('/api/settings', { method: 'PUT', body: '{"ai_enabled":"0"}' })).status === 403);
+  const vst = (await api('/api/storages')).body;
+  check('檢視者只看得到雲端空間名稱（沒有帳號與分享細節）', vst.items.length > 0 && vst.items.every((s) => !('account' in s) && !('config' in s) && !('folderLink' in s) && !('share' in s)) && vst.types.length === 0, JSON.stringify(vst));
+  r = await api('/api/me/prefs', { method: 'PUT', body: JSON.stringify({ mode: 'dark', palette: 'forest' }) });
+  check('每個人都可以改自己的外觀', r.status === 200 && r.body.mode === 'dark' && r.body.palette === 'forest', JSON.stringify(r.body));
+  r = await api('/api/me/prefs', { method: 'PUT', body: JSON.stringify({ palette: 'hacker<script>' }) });
+  const vme = (await api('/api/me')).body;
+  check('外觀設定會保存，不合法的值被忽略', vme.prefs?.mode === 'dark' && vme.prefs.palette === 'forest', JSON.stringify(vme.prefs));
   const E = await login('editor@example.com');
   COOKIE = pair(E.session);
+  check('外觀設定是每個人自己的', (await api('/api/me')).body.prefs?.palette === 'indigo');
   check('編輯者只看得到被授權的群組', (await api('/api/files')).body.items.every((f) => f.group_id === 'Cgroup1') && (await api('/api/files')).body.items.length > 0);
   COOKIE = adminCookie;
   r = await post('/api/users/viewer%40example.com/revoke-sessions', {});

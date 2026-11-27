@@ -43,6 +43,7 @@ export async function logout(all = false): Promise<void> {
 export type Role = 'admin' | 'editor' | 'viewer';
 
 export interface Me {
+  prefs?: import('./theme').ThemePrefs;
   email: string;
   name: string | null;
   role: Role;

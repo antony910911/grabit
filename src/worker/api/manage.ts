@@ -18,9 +18,34 @@ export const manage = new Hono<AppEnv>();
 
 // ---------- 帳號、總覽 ----------
 
+const PALETTES = ['indigo', 'ocean', 'forest', 'terracotta', 'plum', 'graphite'];
+const MODES = ['system', 'light', 'dark'];
+
+async function readPrefs(c: Ctx, email: string): Promise<{ mode: string; palette: string }> {
+  const row = await c.env.DB.prepare('SELECT prefs FROM users WHERE email = ?').bind(email).first<{ prefs: string | null }>();
+  let p: { mode?: string; palette?: string } = {};
+  try {
+    p = JSON.parse(row?.prefs || '{}');
+  } catch {
+    // 忽略損壞的設定
+  }
+  return { mode: MODES.includes(p.mode ?? '') ? p.mode! : 'system', palette: PALETTES.includes(p.palette ?? '') ? p.palette! : 'indigo' };
+}
+
+/** 個人外觀設定（每個人都可以改自己的） */
+manage.put('/me/prefs', async (c) => {
+  const u = c.get('user');
+  const b = await readJson<{ mode?: string; palette?: string }>(c);
+  const cur = await readPrefs(c, u.email);
+  const next = { mode: b.mode && MODES.includes(b.mode) ? b.mode : cur.mode, palette: b.palette && PALETTES.includes(b.palette) ? b.palette : cur.palette };
+  await c.env.DB.prepare('UPDATE users SET prefs = ? WHERE email = ?').bind(JSON.stringify(next), u.email).run();
+  return c.json(next);
+});
+
 manage.get('/me', async (c) => {
   const u = c.get('user');
   return c.json({
+    prefs: await readPrefs(c, u.email),
     email: u.email,
     name: u.name,
     role: u.role,
@@ -488,6 +513,10 @@ function publicStorage(row: StorageRow) {
 
 manage.get('/storages', async (c) => {
   const rows = (await c.env.DB.prepare('SELECT * FROM storages ORDER BY is_default DESC, id').all<StorageRow>()).results;
+  // 非管理員只需要知道有哪些空間（瀏覽資料夾用），不顯示帳號、分享與連線細節
+  if (c.get('user').role !== 'admin') {
+    return c.json({ items: rows.map((r) => ({ id: r.id, type: r.type, typeLabel: STORAGE_LABEL[r.type], name: r.name, root_folder: driveConfig(r).root_name ?? r.root_folder, is_default: r.is_default })), types: [], redirectBase: '' });
+  }
   const usage = (await c.env.DB.prepare("SELECT storage_id, COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM files WHERE status = 'done' GROUP BY storage_id").all<{ storage_id: number; n: number; bytes: number }>()).results;
   const types = (['gdrive', 'onedrive', 'dropbox', 'webdav'] as StorageType[]).map((t) => ({ type: t, label: STORAGE_LABEL[t], configured: t === 'webdav' || oauthConfigured(c.env, t) }));
   const outside = new Map<number, number>();
