@@ -188,9 +188,9 @@ export async function archiveFile(env: Env, fileId: number, source: ContentSourc
       await env.DB.prepare(
         `UPDATE files SET status = 'duplicate', duplicate_of = ?, content_md5 = ?, size = ?, mime_type = ?, storage_id = ?, drive_file_id = ?, drive_link = ?,
          stored_name = ?, folder_path = ?, target_folder = ?, matched_rule_id = ?, project_id = ?, classified_by = ?, unsorted = ?, ai_summary = ?, ai_suggestion = ?,
-         content_text = ?, version_key = ?, version_label = ?, version_rank = ?, error = NULL, updated_at = datetime('now') WHERE id = ?`,
+         content_text = ?, version_key = ?, version_label = ?, version_rank = ?, root_ref = ?, error = NULL, updated_at = datetime('now') WHERE id = ?`,
       )
-        .bind(dup.id, common.hash, common.size, common.mime, storage.id, moved.ref, moved.link ?? uploaded.link, moved.name, DUPLICATE_FOLDER, folder, common.rule, projectId, classifiedBy, unsorted ? 1 : 0, common.summary, common.suggestion, common.text, version.key, version.label, version.rank, fileId)
+        .bind(dup.id, common.hash, common.size, common.mime, storage.id, moved.ref, moved.link ?? uploaded.link, moved.name, DUPLICATE_FOLDER, folder, common.rule, projectId, classifiedBy, unsorted ? 1 : 0, common.summary, common.suggestion, common.text, version.key, version.label, version.rank, moved.root ?? uploaded.root ?? null, fileId)
         .run();
       if (tagNames.length) await addTags(env, fileId, tagNames, result.rule ? 'rule' : 'ai');
       await log(env, 'info', 'duplicate', `「${file.original_name}」與 ${dup.folder_path}/${dup.stored_name} 內容相同，已放到 ${DUPLICATE_FOLDER}`, fileId);
@@ -201,9 +201,9 @@ export async function archiveFile(env: Env, fileId: number, source: ContentSourc
   await env.DB.prepare(
     `UPDATE files SET status = 'done', content_md5 = ?, size = ?, mime_type = ?, storage_id = ?, drive_file_id = ?, drive_link = ?, stored_name = ?, folder_path = ?,
      target_folder = NULL, matched_rule_id = ?, project_id = ?, classified_by = ?, unsorted = ?, ai_summary = ?, ai_suggestion = ?, content_text = ?,
-     version_key = ?, version_label = ?, version_rank = ?, duplicate_of = NULL, error = NULL, updated_at = datetime('now') WHERE id = ?`,
+     version_key = ?, version_label = ?, version_rank = ?, root_ref = ?, duplicate_of = NULL, error = NULL, updated_at = datetime('now') WHERE id = ?`,
   )
-    .bind(common.hash, common.size, common.mime, storage.id, uploaded.ref, uploaded.link, uploaded.name, folder, common.rule, projectId, classifiedBy, unsorted ? 1 : 0, common.summary, common.suggestion, common.text, version.key, version.label, version.rank, fileId)
+    .bind(common.hash, common.size, common.mime, storage.id, uploaded.ref, uploaded.link, uploaded.name, folder, common.rule, projectId, classifiedBy, unsorted ? 1 : 0, common.summary, common.suggestion, common.text, version.key, version.label, version.rank, uploaded.root ?? null, fileId)
     .run();
   if (tagNames.length) await addTags(env, fileId, tagNames, result.rule ? 'rule' : 'ai');
   await indexFile(env, fileId);

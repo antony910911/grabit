@@ -299,6 +299,13 @@ export function FileSheet({ id, folders, onClose, onChanged }: { id: number; fol
                 預覽
               </button>
             )}
+            {!me?.demo && (f.status === 'done' || f.status === 'duplicate') && (
+              // 透過 GrabIt 下載：依 GrabIt 的群組權限判斷，不需要對方有雲端硬碟的權限
+              <a className="btn" href={`/api/files/${f.id}/download`} download>
+                <Icon name="download" />
+                下載
+              </a>
+            )}
             {f.drive_link && (f.status === 'done' || f.status === 'duplicate') && (
               <a className="btn primary" href={f.drive_link} target="_blank" rel="noreferrer">
                 <Icon name="external" />

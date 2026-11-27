@@ -31,6 +31,10 @@ async function googleIdToken(code: string): Promise<string> {
 }
 
 type DriveFile = { id: string; name: string; parents: string[]; folder: boolean; trashed: boolean; md5?: string; size?: number };
+type Perm = { id: string; type: string; role: string; emailAddress?: string };
+const perms = new Map<string, Perm[]>();
+const contents = new Map<string, ArrayBuffer>();
+const atRoot = (f: DriveFile) => f.parents.length === 0 || f.parents[0] === 'root';
 const files = new Map<string, DriveFile>();
 const uploads = new Map<string, { name: string; parents: string[] }>();
 let seq = 0;
@@ -83,6 +87,7 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
     const md5 = [...new Uint8Array(await crypto.subtle.digest('MD5', buf))].map((b) => b.toString(16).padStart(2, '0')).join('');
     const id = `f${++seq}`;
     files.set(id, { id, name: meta.name, parents: meta.parents, folder: false, trashed: false, md5, size: buf.byteLength });
+    contents.set(id, buf);
     return json({ id, md5Checksum: md5, size: String(buf.byteLength) });
   }
   if (host === 'www.googleapis.com') {
@@ -98,7 +103,7 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
       const parent = /'([^']+)' in parents/.exec(q)?.[1];
       const wantFolder = q.includes("mimeType='application/vnd.google-apps.folder'");
       const hit = [...files.values()].find(
-        (f) => f.name === name && !f.trashed && f.folder === wantFolder && (parent === 'root' ? f.parents.length === 0 : f.parents.includes(parent!)),
+        (f) => f.name === name && !f.trashed && f.folder === wantFolder && (parent === 'root' ? atRoot(f) : f.parents.includes(parent!)),
       );
       return json({ files: hit ? [{ id: hit.id }] : [] });
     }
@@ -108,10 +113,29 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
       files.set(id, { id, name: meta.name, parents: meta.parents ?? [], folder: true, trashed: false });
       return json({ id });
     }
+    // 分享權限
+    const pm = /^\/drive\/v3\/files\/([^/]+)\/permissions(?:\/([^/]+))?$/.exec(p);
+    if (pm) {
+      const list = perms.get(pm[1]!) ?? [{ id: 'owner', type: 'user', role: 'owner', emailAddress: 'tester@example.com' }];
+      perms.set(pm[1]!, list);
+      if (req.method === 'GET') return json({ permissions: list });
+      if (req.method === 'POST') {
+        const body = (await req.json()) as Omit<Perm, 'id'>;
+        if (body.type === 'user' && !String(body.emailAddress).includes('@')) return json({ error: 'invalid email' }, 400);
+        const perm = { ...body, id: `perm${++seq}` };
+        list.push(perm);
+        return json({ id: perm.id });
+      }
+      if (req.method === 'DELETE') {
+        perms.set(pm[1]!, list.filter((x) => x.id !== pm[2]));
+        return new Response(null, { status: 204 });
+      }
+    }
     const m = /^\/drive\/v3\/files\/([^/]+)$/.exec(p);
     if (m) {
       const f = files.get(m[1]!);
       if (!f) return json({ error: 'not found' }, 404);
+      if (req.method === 'GET' && url.searchParams.get('alt') === 'media') return new Response(contents.get(f.id) ?? new ArrayBuffer(0));
       if (req.method === 'GET') return json({ parents: f.parents, trashed: f.trashed, md5Checksum: f.md5 });
       if (req.method === 'PATCH') {
         const body = (await req.json()) as { name?: string; trashed?: boolean };
@@ -124,10 +148,18 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
       }
     }
   }
+  if (host === 'mock.test' && p === '/drive-perms') {
+    return json(Object.fromEntries([...perms.entries()].map(([k, v]) => [k, v.filter((x) => x.role !== 'owner').map((x) => (x.type === 'anyone' ? 'anyone' : x.emailAddress))])));
+  }
+  if (host === 'mock.test' && p === '/trash-roots') {
+    for (const f of files.values()) if (f.folder && atRoot(f)) f.trashed = true;
+    return json({ ok: true });
+  }
   if (host === 'mock.test' && p === '/drive-tree') {
     // 把假 Drive 的內容輸出成路徑清單，方便測試檢查
     const pathOf = (f: DriveFile): string => (f.parents[0] && files.get(f.parents[0]) ? `${pathOf(files.get(f.parents[0])!)}/${f.name}` : f.name);
-    return json([...files.values()].filter((f) => !f.folder).map((f) => ({ path: pathOf(f), trashed: f.trashed })));
+    const rootOf = (f: DriveFile): DriveFile => (f.parents[0] && files.get(f.parents[0]) ? rootOf(files.get(f.parents[0])!) : f);
+    return json([...files.values()].filter((f) => !f.folder).map((f) => ({ path: pathOf(f), trashed: f.trashed, root: rootOf(f).id, rootTrashed: rootOf(f).trashed })));
   }
   return new Response(`unmocked ${req.method} ${req.url}`, { status: 599 });
 }
@@ -138,6 +170,8 @@ export default {
   fetch(req: Request, env: never, ctx: ExecutionContext) {
     const url = new URL(req.url);
     if (url.pathname === '/api/__drive') return mockFetch('https://mock.test/drive-tree');
+    if (url.pathname === '/api/__drive/perms') return mockFetch('https://mock.test/drive-perms');
+    if (url.pathname === '/api/__drive/trash-roots') return mockFetch('https://mock.test/trash-roots');
     return worker.fetch(req, env, ctx);
   },
   queue: worker.queue,

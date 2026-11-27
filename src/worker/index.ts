@@ -10,6 +10,7 @@ import { handleQueue, retryPending } from './processor';
 import { handleEmail } from './ingest';
 import { buildAuthUrl, exchangeCode, OAUTH } from './storage/oauth';
 import { FolderCache } from './storage/cache';
+import { GoogleDrive } from './storage/gdrive';
 import { STORAGE_LABEL, type StorageRow, type StorageType } from './storage';
 import { log } from './db';
 import { finishLogin, startLogin } from './auth/google';
@@ -75,6 +76,11 @@ app.get('/oauth/:type/callback', async (c) => {
     const r = await exchangeCode(c.env, type, code, new URL(`/oauth/${type}/callback`, c.req.url).toString());
     await c.env.DB.prepare('UPDATE storages SET secret = ?, account = ? WHERE id = ?').bind(JSON.stringify(r.secret), r.account, storageId).run();
     await new FolderCache(c.env, storageId).clear();
+    if (type === 'gdrive') {
+      // 連結時就建立全新的專屬資料夾並套用分享設定，之後的檔案都放在裡面
+      const fresh = (await c.env.DB.prepare('SELECT * FROM storages WHERE id = ?').bind(storageId).first<StorageRow>())!;
+      await new GoogleDrive({ env: c.env, row: fresh }).rootId();
+    }
     await log(c.env, 'info', 'storage', `${user.email} 連接 ${STORAGE_LABEL[type]}「${row.name}」${r.account ? `（${r.account}）` : ''}`);
     return c.redirect(back('', true));
   } catch (e) {

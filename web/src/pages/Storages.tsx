@@ -11,6 +11,32 @@ const LOGO: Record<string, [string, string]> = {
   demo: ['#6a4a97', 'DEMO'],
 };
 
+type Share = 'private' | 'members' | 'anyone';
+const SHARE: [Share, string, string][] = [
+  ['members', 'GrabIt 成員（建議）', '自動分享給「成員與權限」裡的每個 Google 帳號，新增或移除成員時會同步更新。只有成員打得開。'],
+  ['anyone', '知道連結的任何人', '任何拿到資料夾或檔案連結的人都能檢視與下載，不需要登入。連結被轉傳出去，外人也看得到。'],
+  ['private', '不分享', '只有你（連結的 Google 帳號）看得到。成員仍可以透過 GrabIt 的「下載」按鈕取得自己有權限的檔案。'],
+];
+
+function ShareChoice({ value, onChange }: { value: Share; onChange: (v: Share) => void }) {
+  return (
+    <div className="field">
+      <span>專屬資料夾的分享方式</span>
+      {SHARE.map(([k, label, desc]) => (
+        <label key={k} className="check" style={{ display: 'flex', alignItems: 'flex-start', padding: '6px 0' }}>
+          <input type="radio" name="share" checked={value === k} onChange={() => onChange(k)} style={{ marginTop: 4 }} />
+          <span>
+            <strong>{label}</strong>
+            <span className="muted small" style={{ display: 'block' }}>
+              {desc}
+            </span>
+          </span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 interface Resp {
   items: Storage[];
   types: { type: Storage['type']; label: string; configured: boolean }[];
@@ -68,8 +94,23 @@ export function Storages() {
                   {s.ready ? <span className="badge ok">已連接</span> : <span className="badge warn">尚未授權</span>}
                 </div>
                 <div className="muted small" style={{ marginTop: 4 }}>
-                  {s.account ?? s.config.url ?? ''} · 根目錄「{s.root_folder}」 · {s.files} 個檔案 · {formatBytes(s.bytes)}
+                  {s.account ?? s.config.url ?? ''} · {s.type === 'gdrive' ? '專屬資料夾' : '根目錄'}「{s.root_folder}」 · {s.files} 個檔案 · {formatBytes(s.bytes)}
                 </div>
+                {s.type === 'gdrive' && s.ready && (
+                  <div className="row small" style={{ marginTop: 8, gap: 8 }}>
+                    {s.folderLink && (
+                      <a href={s.folderLink} target="_blank" rel="noreferrer">
+                        開啟資料夾
+                      </a>
+                    )}
+                    {s.folderLink && <CopyLink link={s.folderLink} />}
+                    <span className={`badge ${s.share === 'private' ? 'muted' : s.share === 'anyone' ? 'warn' : 'info'}`}>
+                      {{ private: '不分享', members: '分享給 GrabIt 成員', anyone: '知道連結的任何人' }[s.share ?? 'private']}
+                    </span>
+                  </div>
+                )}
+                {s.shareError && <div className="small" style={{ color: 'var(--danger)', marginTop: 6 }}>分享設定有問題：{s.shareError}</div>}
+                {admin && s.filesOutside > 0 && <Consolidate storage={s} onDone={reload} />}
               </div>
               {admin && (
                 <div className="row">
@@ -105,6 +146,51 @@ export function Storages() {
   );
 }
 
+function CopyLink({ link }: { link: string }) {
+  const toast = useToast();
+  return (
+    <button className="btn sm ghost" style={{ minHeight: 0, padding: 0 }} onClick={() => navigator.clipboard.writeText(link).then(() => toast('已複製資料夾連結')).catch(() => toast(link))}>
+      複製連結
+    </button>
+  );
+}
+
+/** 把散落在舊位置的檔案搬進專屬資料夾：分批呼叫直到完成 */
+function Consolidate({ storage, onDone }: { storage: Storage; onDone: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [left, setLeft] = useState(storage.filesOutside);
+  const run = async () => {
+    if (!(await ask(`把 ${storage.filesOutside} 個不在「${storage.root_folder}」裡的舊檔案搬進來？會保留原本的子資料夾結構，Google Drive 上的檔案連結不變。`, '開始整理'))) return;
+    setBusy(true);
+    let moved = 0;
+    let errors = 0;
+    try {
+      for (let i = 0; i < 500; i++) {
+        const r = await api<{ moved: number; remaining: number; errors: string[] }>(`/storages/${storage.id}/consolidate`, { method: 'POST', json: {} });
+        moved += r.moved;
+        errors += r.errors.length;
+        setLeft(r.remaining);
+        if (!r.remaining || (!r.moved && !r.errors.length)) break;
+      }
+      toast(errors ? `已搬移 ${moved} 個檔案，${errors} 個失敗（見歸檔紀錄）` : `已把 ${moved} 個檔案整理到專屬資料夾`, errors ? 'error' : 'ok');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setBusy(false);
+      onDone();
+    }
+  };
+  return (
+    <div className="notice warn" style={{ marginTop: 10, marginBottom: 0 }}>
+      <span className="grow">有 {left} 個舊檔案不在專屬資料夾裡（散落在雲端硬碟其他位置）。</span>
+      <button className="btn sm" disabled={busy} onClick={run}>
+        {busy ? `整理中…剩 ${left} 個` : '整理到專屬資料夾'}
+      </button>
+    </div>
+  );
+}
+
 function AddStorage({ types, redirectBase, onClose, onDone }: { types: Resp['types']; redirectBase: string; onClose: () => void; onDone: () => void }) {
   const toast = useToast();
   const [type, setType] = useState<Storage['type']>('gdrive');
@@ -113,13 +199,14 @@ function AddStorage({ types, redirectBase, onClose, onDone }: { types: Resp['typ
   const [url, setUrl] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [share, setShare] = useState<Share>('members');
   const [busy, setBusy] = useState(false);
   const t = types.find((x) => x.type === type);
 
   const create = async () => {
     setBusy(true);
     try {
-      const r = await api<{ id: number; authorizeUrl: string | null }>('/storages', { method: 'POST', json: { type, name, root_folder: root, url, username, password } });
+      const r = await api<{ id: number; authorizeUrl: string | null }>('/storages', { method: 'POST', json: { type, name, root_folder: root, url, username, password, share } });
       if (r.authorizeUrl) {
         location.href = r.authorizeUrl;
         return;
@@ -172,6 +259,14 @@ function AddStorage({ types, redirectBase, onClose, onDone }: { types: Resp['typ
         <input className="input" value={root} onChange={(e) => setRoot(e.target.value)} />
         <small>所有檔案都會放在這個資料夾底下</small>
       </label>
+      {type === 'gdrive' && (
+        <>
+          <p className="muted small" style={{ marginTop: 0 }}>
+            授權後會在你的「我的雲端硬碟」建立一個全新的「{root || 'GrabIt'}」資料夾，之後收到的檔案都只會放在這個資料夾裡。
+          </p>
+          <ShareChoice value={share} onChange={setShare} />
+        </>
+      )}
       {type === 'webdav' && (
         <>
           <label className="field">
@@ -199,10 +294,15 @@ function EditStorage({ storage, onClose, onDone }: { storage: Storage; onClose: 
   const [name, setName] = useState(storage.name);
   const [root, setRoot] = useState(storage.root_folder);
   const [password, setPassword] = useState('');
+  const [share, setShare] = useState<Share>(storage.share ?? 'private');
   const save = async (extra: Record<string, unknown> = {}) => {
     try {
-      await api(`/storages/${storage.id}`, { method: 'PATCH', json: { name, root_folder: root, ...(password ? { password } : {}), ...extra } });
-      toast('已儲存');
+      const r = await api<{ errors?: string[] }>(`/storages/${storage.id}`, {
+        method: 'PATCH',
+        json: { name, root_folder: root, ...(password ? { password } : {}), ...(storage.type === 'gdrive' && share !== storage.share ? { share } : {}), ...extra },
+      });
+      if (r.errors?.length) toast(`已儲存，但部分分享失敗：${r.errors[0]}`, 'error');
+      else toast('已儲存');
       onDone();
     } catch (e) {
       toast((e as Error).message, 'error');
@@ -242,10 +342,11 @@ function EditStorage({ storage, onClose, onDone }: { storage: Storage; onClose: 
         <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
       </label>
       <label className="field">
-        <span>根目錄名稱</span>
+        <span>{storage.type === 'gdrive' ? '專屬資料夾名稱' : '根目錄名稱'}</span>
         <input className="input" value={root} onChange={(e) => setRoot(e.target.value)} />
-        <small>只影響之後的新檔案，已歸檔的檔案不會移動</small>
+        <small>{storage.type === 'gdrive' ? '直接把 Google Drive 上的資料夾改名，檔案不用搬' : '只影響之後的新檔案，已歸檔的檔案不會移動'}</small>
       </label>
+      {storage.type === 'gdrive' && <ShareChoice value={share} onChange={setShare} />}
       {storage.type === 'webdav' && (
         <label className="field">
           <span>更新密碼</span>

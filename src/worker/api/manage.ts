@@ -8,6 +8,8 @@ import { hasFts, searchForAi } from '../search';
 import { STORAGE_LABEL, storageReady, type StorageRow, type StorageType } from '../storage';
 import { oauthConfigured } from '../storage/oauth';
 import { FolderCache } from '../storage/cache';
+import { driveConfig, gdriveFolderLink, GoogleDrive, type ShareMode } from '../storage/gdrive';
+import { consolidate, filesOutsideRoot, syncDriveSharing } from '../storage/share';
 import { revokeAllSessions } from '../auth/session';
 import { loginConfigured, LOGIN_CALLBACK_PATH } from '../auth/google';
 import { bad, intParam, need, notFound, readJson, type AppEnv, type Ctx } from './util';
@@ -445,17 +447,41 @@ manage.patch('/groups/:id', async (c) => {
 
 // ---------- 雲端空間 ----------
 
+const SHARE_MODES: ShareMode[] = ['private', 'members', 'anyone'];
+
 function publicStorage(row: StorageRow) {
   const cfg = JSON.parse(row.config || '{}') as Record<string, string>;
-  return { id: row.id, type: row.type, typeLabel: STORAGE_LABEL[row.type], name: row.name, root_folder: row.root_folder, account: row.account, is_default: row.is_default, ready: storageReady(row), config: { url: cfg.url, username: cfg.username } };
+  const drive = row.type === 'gdrive' ? driveConfig(row) : null;
+  return {
+    id: row.id,
+    type: row.type,
+    typeLabel: STORAGE_LABEL[row.type],
+    name: row.name,
+    root_folder: drive?.root_name ?? row.root_folder,
+    account: row.account,
+    is_default: row.is_default,
+    ready: storageReady(row),
+    config: { url: cfg.url, username: cfg.username },
+    // Google Drive 專屬資料夾
+    folderLink: drive?.root_id ? gdriveFolderLink(drive.root_id) : null,
+    share: drive ? (drive.share ?? 'private') : null,
+    shareError: drive?.share_error ?? null,
+  };
 }
 
 manage.get('/storages', async (c) => {
   const rows = (await c.env.DB.prepare('SELECT * FROM storages ORDER BY is_default DESC, id').all<StorageRow>()).results;
   const usage = (await c.env.DB.prepare("SELECT storage_id, COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM files WHERE status = 'done' GROUP BY storage_id").all<{ storage_id: number; n: number; bytes: number }>()).results;
   const types = (['gdrive', 'onedrive', 'dropbox', 'webdav'] as StorageType[]).map((t) => ({ type: t, label: STORAGE_LABEL[t], configured: t === 'webdav' || oauthConfigured(c.env, t) }));
+  const outside = new Map<number, number>();
+  for (const r of rows) if (r.type === 'gdrive' && driveConfig(r).root_id) outside.set(r.id, await filesOutsideRoot(c.env, r));
   return c.json({
-    items: rows.map((r) => ({ ...publicStorage(r), files: usage.find((u) => u.storage_id === r.id)?.n ?? 0, bytes: usage.find((u) => u.storage_id === r.id)?.bytes ?? 0 })),
+    items: rows.map((r) => ({
+      ...publicStorage(r),
+      files: usage.find((u) => u.storage_id === r.id)?.n ?? 0,
+      bytes: usage.find((u) => u.storage_id === r.id)?.bytes ?? 0,
+      filesOutside: outside.get(r.id) ?? 0,
+    })),
     types,
     redirectBase: new URL(c.req.url).origin,
   });
@@ -463,12 +489,17 @@ manage.get('/storages', async (c) => {
 
 manage.post('/storages', async (c) => {
   const user = need(c, 'admin');
-  const b = await readJson<{ type: StorageType; name?: string; root_folder?: string; url?: string; username?: string; password?: string }>(c);
+  const b = await readJson<{ type: StorageType; name?: string; root_folder?: string; url?: string; username?: string; password?: string; share?: ShareMode }>(c);
   if (!['gdrive', 'onedrive', 'dropbox', 'webdav'].includes(b.type) && !(b.type === 'demo' && c.env.DEMO_AI)) throw bad('不支援的空間類型');
   if (b.type === 'webdav' && !/^https:\/\//.test(b.url ?? '')) throw bad('WebDAV 網址必須是 https:// 開頭');
   if (b.type !== 'webdav' && b.type !== 'demo' && !oauthConfigured(c.env, b.type)) throw bad(`伺服器尚未設定 ${STORAGE_LABEL[b.type]} 的 OAuth 用戶端，請參考 README`);
   const count = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM storages').first<{ n: number }>();
-  const config = b.type === 'webdav' ? JSON.stringify({ url: b.url, username: b.username ?? '' }) : '{}';
+  const config =
+    b.type === 'webdav'
+      ? JSON.stringify({ url: b.url, username: b.username ?? '' })
+      : b.type === 'gdrive'
+        ? JSON.stringify({ share: SHARE_MODES.includes(b.share as ShareMode) ? b.share : 'members' })
+        : '{}';
   const secret = b.type === 'webdav' ? JSON.stringify({ password: b.password ?? '' }) : '{}';
   const r = await c.env.DB.prepare('INSERT INTO storages (type, name, root_folder, config, secret, is_default) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(b.type, b.name?.trim() || STORAGE_LABEL[b.type], b.root_folder?.trim() || 'GrabIt', config, secret, count?.n ? 0 : 1)
@@ -483,7 +514,8 @@ manage.patch('/storages/:id', async (c) => {
   const id = intParam(c);
   const row = await c.env.DB.prepare('SELECT * FROM storages WHERE id = ?').bind(id).first<StorageRow>();
   if (!row) throw notFound();
-  const b = await readJson<{ name?: string; root_folder?: string; is_default?: boolean; url?: string; username?: string; password?: string }>(c);
+  const b = await readJson<{ name?: string; root_folder?: string; is_default?: boolean; url?: string; username?: string; password?: string; share?: ShareMode }>(c);
+  if (b.share !== undefined && !SHARE_MODES.includes(b.share)) throw bad('分享方式不正確');
   if (b.is_default) await c.env.DB.prepare('UPDATE storages SET is_default = 0').run();
   let config = row.config;
   let secret = row.secret;
@@ -496,8 +528,33 @@ manage.patch('/storages/:id', async (c) => {
   await c.env.DB.prepare('UPDATE storages SET name = ?, root_folder = ?, is_default = ?, config = ?, secret = ? WHERE id = ?')
     .bind(b.name?.trim() || row.name, root || row.root_folder, b.is_default ? 1 : row.is_default, config, secret, id)
     .run();
+  if (row.type === 'gdrive') {
+    // Google Drive：改名直接改專屬資料夾的名稱（檔案不用搬）；改分享方式立即套用
+    const fresh = (await c.env.DB.prepare('SELECT * FROM storages WHERE id = ?').bind(id).first<StorageRow>())!;
+    const drive = new GoogleDrive({ env: c.env, row: fresh });
+    if (storageReady(fresh) && root && root !== (driveConfig(row).root_name ?? row.root_folder)) await drive.renameRoot(root);
+    if (b.share !== undefined) {
+      fresh.config = JSON.stringify({ ...driveConfig(fresh), share: b.share });
+      await c.env.DB.prepare('UPDATE storages SET config = ? WHERE id = ?').bind(fresh.config, id).run();
+      if (storageReady(fresh)) {
+        const r = await drive.applySharing();
+        await log(c.env, r.errors.length ? 'warn' : 'info', 'storage', `${c.get('user').email} 將「${row.name}」的分享方式改為 ${{ private: '不分享', members: 'GrabIt 成員', anyone: '知道連結的任何人' }[b.share]}${r.errors.length ? `（部分失敗：${r.errors[0]}）` : ''}`);
+        return c.json({ ok: true, errors: r.errors });
+      }
+    }
+    return c.json({ ok: true });
+  }
   if (root && root !== row.root_folder) await new FolderCache(c.env, id).clear();
   return c.json({ ok: true });
+});
+
+/** 把散落在舊位置的檔案搬進 Google Drive 專屬資料夾（每次一批，前端會重複呼叫直到完成） */
+manage.post('/storages/:id/consolidate', async (c) => {
+  need(c, 'admin');
+  const row = await c.env.DB.prepare("SELECT * FROM storages WHERE id = ? AND type = 'gdrive'").bind(intParam(c)).first<StorageRow>();
+  if (!row) throw notFound('找不到 Google Drive 空間');
+  if (!storageReady(row)) throw bad('請先完成授權');
+  return c.json(await consolidate(c.env, row));
 });
 
 manage.delete('/storages/:id', async (c) => {
@@ -552,6 +609,7 @@ manage.post('/users', async (c) => {
   }
   await saveUserGroups(c, email, b.groups);
   await log(c.env, 'info', 'user', `${me.email} 新增成員 ${email}（${role}）`);
+  c.executionCtx.waitUntil(syncDriveSharing(c.env));
   return c.json({ ok: true });
 });
 
@@ -577,6 +635,7 @@ manage.delete('/users/:email', async (c) => {
   await c.env.DB.batch([c.env.DB.prepare('DELETE FROM user_groups WHERE email = ?').bind(email), c.env.DB.prepare('DELETE FROM users WHERE email = ?').bind(email)]);
   const n = await revokeAllSessions(c.env, email);
   await log(c.env, 'info', 'user', `${me.email} 移除成員 ${email}（撤銷 ${n} 個登入）`);
+  c.executionCtx.waitUntil(syncDriveSharing(c.env));
   return c.json({ ok: true });
 });
 
