@@ -4,6 +4,7 @@ import { getGroup, getSetting, listRules, log, setSetting, deleteSetting } from 
 import { canSeeGroup, fileScope, type Role } from '../permissions';
 import { classify, renderPath, splitList, templateVars, type MatchType, type Rule } from '../rules';
 import { AiQuotaError, AiTransientError, WORKERS_MODELS, DEFAULT_GEMINI_MODEL } from '../ai';
+import { parseVerification, siteInfo } from '../public';
 import { actualUnits, aiStatus, askEngineFor, isExternal, loadAiSettings, pause, pausedUntil, queueAi, refundUsage, reserveUsage, resumeAi, settleUsage, DEFAULT_FEATURES, type AiFeatures } from '../ai-job';
 import { hasFts, searchForAi } from '../search';
 import { STORAGE_LABEL, storageReady, type StorageRow, type StorageType } from '../storage';
@@ -745,6 +746,18 @@ manage.get('/settings', async (c) => {
     queueEnabled: !!c.env.FILE_QUEUE,
     timezone: c.env.TIMEZONE || 'Asia/Taipei',
     ai: await aiSettingsView(c),
+    publicSite: await (async () => {
+      const info = await siteInfo(c.env);
+      return {
+        operator: info.operator,
+        contact: info.contact,
+        verification: info.verification ? (info.verification.kind === 'file' ? info.verification.value : `<meta name="google-site-verification" content="${info.verification.value}">`) : '',
+        homeUrl: `${origin}/about`,
+        privacyUrl: `${origin}/privacy`,
+        termsUrl: `${origin}/terms`,
+        domain: new URL(origin).host,
+      };
+    })(),
     fullText: await hasFts(c.env),
     semantic: !!(c.env.AI && c.env.VECTORIZE),
     outgoingWebhook: (await getSetting(c.env, 'webhook_url')) ?? '',
@@ -815,8 +828,30 @@ async function saveAiSettings(c: Ctx, b: AiSettingsPatch): Promise<void> {
 
 manage.put('/settings', async (c) => {
   const me = need(c, 'admin');
-  const b = await readJson<{ ai?: AiSettingsPatch; outgoingWebhook?: string; outgoingWebhookSecret?: string; emailAllowedSenders?: string }>(c);
+  const b = await readJson<{ ai?: AiSettingsPatch; outgoingWebhook?: string; outgoingWebhookSecret?: string; emailAllowedSenders?: string; publicOperator?: string; publicContact?: string; siteVerification?: string }>(c);
   if (b.ai) await saveAiSettings(c, b.ai);
+  // 公開頁面（關於、隱私權政策、服務條款）上顯示的營運者與聯絡方式，以及 Google 網站驗證
+  if (b.publicOperator !== undefined) {
+    const v = b.publicOperator.replace(/\s+/g, ' ').trim().slice(0, 60);
+    if (v) await setSetting(c.env, 'public_operator', v);
+    else await deleteSetting(c.env, 'public_operator');
+  }
+  if (b.publicContact !== undefined) {
+    const v = b.publicContact.trim();
+    if (v && !/^[^\s@<>"']+@[^\s@<>"']+\.[^\s@<>"']+$/.test(v)) throw bad('聯絡 Email 格式不正確');
+    if (v) await setSetting(c.env, 'public_contact', v.slice(0, 120));
+    else await deleteSetting(c.env, 'public_contact');
+  }
+  if (b.siteVerification !== undefined) {
+    let parsed;
+    try {
+      parsed = parseVerification(b.siteVerification);
+    } catch (e) {
+      throw bad((e as Error).message);
+    }
+    if (parsed) await setSetting(c.env, 'google_site_verification', `${parsed.kind}:${parsed.value}`);
+    else await deleteSetting(c.env, 'google_site_verification');
+  }
   if (b.outgoingWebhook !== undefined) {
     if (b.outgoingWebhook && !/^https:\/\//.test(b.outgoingWebhook)) throw bad('Webhook 網址必須是 https:// 開頭');
     if (b.outgoingWebhook) await setSetting(c.env, 'webhook_url', b.outgoingWebhook);

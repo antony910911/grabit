@@ -108,6 +108,14 @@ try {
   check('設定完成後，第一次設定清單只回傳 ready（不透露設定細節）', setupRes.status === 200 && JSON.stringify(setupRes.body) === '{"ready":true}', JSON.stringify(setupRes.body));
   check('未登入時雲端授權路徑被擋下', (await fetch(`${BASE}/oauth/gdrive/start?storage=1`, { redirect: 'manual' })).status === 401);
   check('未登入時上傳被擋下', (await fetch(`${BASE}/api/upload`, { method: 'POST', body: new FormData() })).status === 401);
+  // 公開頁面：Google 審核 OAuth 應用程式時要能不登入就打開
+  for (const [path, must] of [['/about', '成員登入'], ['/privacy', 'Limited Use'], ['/terms', '服務條款']]) {
+    const res = await fetch(BASE + path);
+    const html = await res.text();
+    check(`公開頁面 ${path} 不用登入就能打開`, res.status === 200 && html.includes(must) && html.includes('/privacy'), `${res.status} ${html.slice(0, 80)}`);
+  }
+  const home0 = await (await fetch(BASE + '/')).text();
+  check('沒有設定驗證碼時首頁照常是管理介面', home0.includes('<div id="root">') && !home0.includes('google-site-verification'));
 
   let L = await login('admin@example.com');
   check('導向 Google：PKCE、nonce、state、只要求基本資料', L.loc.origin === 'https://accounts.google.com' && L.loc.searchParams.get('code_challenge_method') === 'S256' && !!L.loc.searchParams.get('nonce') && L.loc.searchParams.get('scope') === 'openid email profile' && L.loc.searchParams.get('redirect_uri') === `${BASE.replace('127.0.0.1', '127.0.0.1')}/auth/google/callback`, L.loc.toString());
@@ -365,6 +373,20 @@ try {
   check('規則已分類的檔案不呼叫 AI', f1ai.ai_status === 'skipped' && /規則/.test(f1ai.ai_error ?? ''), JSON.stringify([f1ai.ai_status, f1ai.ai_error]));
   r = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ ai: { workersModel: 'rm -rf /' } }) });
   check('不合法的模型名稱被拒絕', r.status === 400);
+
+  // Google Search Console 網站驗證與公開頁面上的聯絡方式
+  r = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ siteVerification: '<meta name="google-site-verification" content="abcDEF123_xyz-456" />', publicOperator: '測試研究室', publicContact: 'contact@example.com' }) });
+  const home1 = await (await fetch(BASE + '/')).text();
+  check('貼上 meta 標籤後首頁帶有驗證碼', r.status === 200 && home1.includes('<meta name="google-site-verification" content="abcDEF123_xyz-456">') && home1.includes('<div id="root">'), home1.slice(0, 300));
+  const priv = await (await fetch(BASE + '/privacy')).text();
+  check('隱私權政策顯示營運者與聯絡方式', priv.includes('測試研究室') && priv.includes('contact@example.com'));
+  r = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ siteVerification: 'google1a2b3c4d5e.html' }) });
+  const vf = await fetch(BASE + '/google1a2b3c4d5e.html');
+  const vfText = await vf.text();
+  check('HTML 驗證檔可以下載，其他檔名不行', r.status === 200 && vf.status === 200 && vfText === 'google-site-verification: google1a2b3c4d5e.html' && (await fetch(BASE + '/google999.html')).status === 404, `${vf.status} ${vfText}`);
+  check('不合法的驗證碼與 Email 被拒絕', (await api('/api/settings', { method: 'PUT', body: JSON.stringify({ siteVerification: '<script>x</script>' }) })).status === 400 && (await api('/api/settings', { method: 'PUT', body: JSON.stringify({ publicContact: 'not an email' }) })).status === 400);
+  const pubSite = (await api('/api/settings')).body.publicSite;
+  check('系統設定提供要貼到 Google 的網址', pubSite.homeUrl.endsWith('/about') && pubSite.privacyUrl.endsWith('/privacy') && pubSite.termsUrl.endsWith('/terms') && pubSite.verification === 'google1a2b3c4d5e.html', JSON.stringify(pubSite));
 
   await webhook([ev('a1', 'file', '掃描檔A.pdf'), ev('a2', 'file', '不明檔案B.pdf'), ev('a3', 'file', '可疑檔案C.pdf')]);
   const a1 = await waitAi('掃描檔A.pdf');

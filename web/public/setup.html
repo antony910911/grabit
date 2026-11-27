@@ -584,6 +584,11 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 40px 0; }
   <div><p>應用程式還在「測試中」。照<a href="#s4-4">第 4-4 步</a>按「發布應用程式」。</p></div>
 </details>
 <details>
+  <summary>Google 驗證中心說「首頁未註冊」「隱私權政策內容不足」「首頁必須登入」</summary>
+  <div><p><b>GrabIt 不需要通過 Google 驗證</b>：它只要求登入的基本資料和「只能存取 GrabIt 自己建立的檔案」的雲端硬碟權限，都是非敏感範圍。只要 <span class="btn">目標對象</span> 顯示「實際運作中」就能正常使用。通常是在 <span class="btn">品牌塑造</span> 上傳了 App 標誌才會被要求驗證，把標誌移除、儲存即可。</p>
+  <p>如果你想在 Google 登入畫面顯示 App 名稱與標誌：到 GrabIt 的 <span class="btn">設定</span> → <span class="btn">一般</span> →「Google 驗證與公開頁面」，把那裡的首頁、隱私權政策、服務條款網址貼到 Google 的「品牌塑造」，填上聯絡 Email，再用 Google Search Console 驗證網站擁有權（貼上驗證碼），等 24 小時後重新送出。</p></div>
+</details>
+<details>
   <summary>登入時說「這個 Google 帳號還不是 GrabIt 成員」</summary>
   <div><p>你登入用的 Gmail 和 <code>ADMIN_EMAILS</code> 填的不一樣。到 Cloudflare 的 Variables and Secrets 檢查拼字（可以多個，用逗號隔開），或登入時換選另一個 Google 帳號。其他成員要由管理員在「成員與權限」加入。</p></div>
 </details>

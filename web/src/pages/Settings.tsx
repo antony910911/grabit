@@ -10,6 +10,7 @@ interface SettingsResp {
   queueEnabled: boolean;
   timezone: string;
   ai: AiSettingsResp;
+  publicSite: { operator: string; contact: string; verification: string; homeUrl: string; privacyUrl: string; termsUrl: string; domain: string };
   fullText: boolean;
   semantic: boolean;
   outgoingWebhook: string;
@@ -48,10 +49,18 @@ export function SettingsPage() {
   const toast = useToast();
   const me = useMe();
   const { data: s, error, loading, reload } = useLoad(() => api<SettingsResp>('/settings'), []);
-  const [form, setForm] = useState({ outgoingWebhook: '', outgoingWebhookSecret: '', emailAllowedSenders: '' });
+  const [form, setForm] = useState({ outgoingWebhook: '', outgoingWebhookSecret: '', emailAllowedSenders: '', publicOperator: '', publicContact: '', siteVerification: '' });
 
   useEffect(() => {
-    if (s) setForm({ outgoingWebhook: s.outgoingWebhook, outgoingWebhookSecret: '', emailAllowedSenders: s.emailAllowedSenders });
+    if (s)
+      setForm({
+        outgoingWebhook: s.outgoingWebhook,
+        outgoingWebhookSecret: '',
+        emailAllowedSenders: s.emailAllowedSenders,
+        publicOperator: s.publicSite.operator,
+        publicContact: s.publicSite.contact,
+        siteVerification: s.publicSite.verification,
+      });
   }, [s]);
 
   if (me && me.role !== 'admin') return <div className="notice warn">只有管理員可以修改系統設定。</div>;
@@ -91,6 +100,59 @@ export function SettingsPage() {
             <p className="muted small" style={{ marginBottom: 0 }}>
               管理員名單（ADMIN_EMAILS）：{s.adminEmails.length ? s.adminEmails.join('、') : '未設定'}。其他人要先由管理員在 <Link to="/users">成員與權限</Link> 加入才能登入。
             </p>
+          </section>
+
+          <section className="card card-pad">
+            <h2>Google 驗證與公開頁面（選用）</h2>
+            <p className="muted small">
+              GrabIt 只要求 Google 的基本登入資料，以及「只能存取 GrabIt 自己建立的檔案」的雲端硬碟權限，兩者都屬於<b>非敏感範圍</b>：在 Google Auth Platform 把應用程式發布成「實際運作中」就能使用，<b>不需要通過 Google 驗證</b>。只有想在 Google 登入畫面顯示 App 名稱與標誌時，才需要下面這些。
+            </p>
+            <p className="small" style={{ fontWeight: 600, marginBottom: 4 }}>
+              貼到 Google Auth Platform →「品牌塑造」的網址（不用登入就能打開）：
+            </p>
+            <div className="small muted">應用程式首頁</div>
+            <Copy text={s.publicSite.homeUrl} />
+            <div className="small muted" style={{ marginTop: 8 }}>
+              隱私權政策
+            </div>
+            <Copy text={s.publicSite.privacyUrl} />
+            <div className="small muted" style={{ marginTop: 8 }}>
+              服務條款
+            </div>
+            <Copy text={s.publicSite.termsUrl} />
+            <div className="small muted" style={{ marginTop: 8 }}>
+              已授權網域
+            </div>
+            <Copy text={s.publicSite.domain} />
+            <div className="grid-2" style={{ marginTop: 14 }}>
+              <label className="field">
+                <span>營運者名稱（顯示在公開頁面）</span>
+                <input className="input" value={form.publicOperator} onChange={(e) => setForm({ ...form, publicOperator: e.target.value })} placeholder="例如：○○ 研究室" maxLength={60} />
+              </label>
+              <label className="field">
+                <span>聯絡 Email（隱私權政策上的聯絡方式）</span>
+                <input className="input" type="email" value={form.publicContact} onChange={(e) => setForm({ ...form, publicContact: e.target.value })} placeholder="contact@example.com" />
+              </label>
+            </div>
+            <label className="field">
+              <span>Google Search Console 網站驗證</span>
+              <input className="input" value={form.siteVerification} onChange={(e) => setForm({ ...form, siteVerification: e.target.value })} placeholder='<meta name="google-site-verification" content="…"> 或 google1234abcd.html' />
+              <small>到 Google Search Console 新增「網址前置字元」資源 {s.publicSite.homeUrl.replace(/\/about$/, '/')}，選「HTML 標記」貼上整段 meta 標籤，或選「HTML 檔案」貼上檔名；存好後回 Search Console 按「驗證」。</small>
+            </label>
+            <div className="row" style={{ gap: 8 }}>
+              <button
+                className="btn sm primary"
+                onClick={() => save({ publicOperator: form.publicOperator, publicContact: form.publicContact, siteVerification: form.siteVerification })}
+              >
+                儲存
+              </button>
+              <a className="btn sm" href="/about" target="_blank" rel="noopener">
+                看公開首頁
+              </a>
+              <a className="btn sm" href="/privacy" target="_blank" rel="noopener">
+                看隱私權政策
+              </a>
+            </div>
           </section>
 
           <section className="card card-pad">

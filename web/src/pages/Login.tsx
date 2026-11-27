@@ -89,6 +89,11 @@ export function Login({ message }: { message?: string | null }) {
         </p>
       </div>
       {setup && !setup.ready && <FirstRun s={setup} />}
+      <nav className="login-links muted small" aria-label="關於 GrabIt">
+        <a href="/about">關於 GrabIt</a>
+        <a href="/privacy">隱私權政策</a>
+        <a href="/terms">服務條款</a>
+      </nav>
     </div>
   );
 }
