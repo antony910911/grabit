@@ -1,7 +1,10 @@
 // 展示版執行環境：在瀏覽器裡跑正式的後端（Hono API、歸檔流程、規則、版本、去重…），
 // 資料庫用 sql.js，雲端空間與 AI 用模擬版，LINE API 用假的回應。
-import m1 from '../../migrations/0001_init.sql?raw';
-import m2 from '../../migrations/0002_v2.sql?raw';
+// 依序載入所有資料表更新；全文搜尋（FTS5）在瀏覽器版 SQLite 不支援，略過
+const MIGRATIONS = Object.entries(import.meta.glob('../../migrations/*.sql', { query: '?raw', import: 'default', eager: true }) as Record<string, string>)
+  .filter(([name]) => !name.includes('_fts'))
+  .sort(([a], [b]) => a.localeCompare(b))
+  .map(([, sql]) => sql);
 import { app } from '../../src/worker/index';
 import { handleEvents } from '../../src/worker/webhook';
 import { ingestBuffer } from '../../src/worker/ingest';
@@ -156,7 +159,7 @@ async function seed() {
 }
 
 export async function startDemo(): Promise<void> {
-  const DB = await createDb([m1, m2]);
+  const DB = await createDb(MIGRATIONS);
   env = { DB: DB as unknown as D1Database, LINE_CHANNEL_SECRET: 'demo', LINE_CHANNEL_ACCESS_TOKEN: 'demo', DEV_NO_AUTH: 'true', TIMEZONE: 'Asia/Taipei', DEMO_AI: demoAi } as Env;
   window.fetch = demoFetch as typeof fetch;
   await seed();

@@ -89,7 +89,9 @@ files.get('/files', async (c) => {
     parts.where.push(q.project === 'none' ? 'f.project_id IS NULL' : 'f.project_id = ?');
     if (q.project !== 'none') parts.binds.push(Number(q.project));
   }
-  if (q.tag) {
+  if (q.tag === 'none') {
+    parts.where.push('NOT EXISTS (SELECT 1 FROM file_tags ft WHERE ft.file_id = f.id)');
+  } else if (q.tag) {
     parts.where.push('EXISTS (SELECT 1 FROM file_tags ft WHERE ft.file_id = f.id AND ft.tag_id = ?)');
     parts.binds.push(Number(q.tag));
   }
@@ -214,6 +216,38 @@ files.patch('/files/:id', async (c) => {
     await indexFile(c.env, file.id);
   }
   return c.json({ ok: true, batchId, suggestion });
+});
+
+/** 批次設定專案／加標籤／移除標籤（看板拖拉、多選操作都用這個） */
+files.post('/files/bulk', async (c) => {
+  const user = need(c, 'editor');
+  const b = await readJson<{ ids: number[]; projectId?: number | null; addTags?: string[]; removeTags?: string[] }>(c);
+  if (!Array.isArray(b.ids) || !b.ids.length) throw bad('請選擇檔案');
+  if (b.projectId) {
+    const p = await c.env.DB.prepare('SELECT id FROM projects WHERE id = ?').bind(b.projectId).first();
+    if (!p) throw bad('找不到這個專案');
+  }
+  let updated = 0;
+  for (const id of b.ids.slice(0, 500)) {
+    let file: FileRow;
+    try {
+      file = await visibleFile(c, id);
+    } catch {
+      continue;
+    }
+    if (b.projectId !== undefined) await c.env.DB.prepare("UPDATE files SET project_id = ?, updated_at = datetime('now') WHERE id = ?").bind(b.projectId, file.id).run();
+    if (b.addTags?.length) await addTags(c.env, file.id, b.addTags, 'manual');
+    if (b.removeTags?.length) {
+      for (const t of b.removeTags) await c.env.DB.prepare('DELETE FROM file_tags WHERE file_id = ? AND tag_id = (SELECT id FROM tags WHERE name = ?)').bind(file.id, t).run();
+    }
+    if (b.addTags?.length || b.removeTags?.length) await indexFile(c.env, file.id);
+    updated++;
+  }
+  const what = [b.projectId !== undefined ? (b.projectId ? '設定專案' : '移出專案') : '', b.addTags?.length ? `加上標籤 ${b.addTags.join('、')}` : '', b.removeTags?.length ? `移除標籤 ${b.removeTags.join('、')}` : '']
+    .filter(Boolean)
+    .join('、');
+  await log(c.env, 'info', 'manual', `${user.email} 對 ${updated} 個檔案${what}`);
+  return c.json({ updated });
 });
 
 /** 批次搬移（拖拉多個檔案到資料夾） */
@@ -347,6 +381,10 @@ files.post('/files/reapply', async (c) => {
       await c.env.DB.prepare("UPDATE files SET unsorted = ?, matched_rule_id = ?, classified_by = ? WHERE id = ?")
         .bind(ch.unsorted ? 1 : 0, ch.ruleId, ch.ruleId ? 'rule' : 'none', f.id)
         .run();
+      // 規則有指定專案、標籤時一起套用
+      const rule = ch.ruleId ? rules.find((x) => x.id === ch.ruleId) : null;
+      if (rule?.project_id) await c.env.DB.prepare('UPDATE files SET project_id = ? WHERE id = ?').bind(rule.project_id, f.id).run();
+      if (rule?.tags) await addTags(c.env, f.id, rule.tags.split(/[,，、]/).map((x) => x.trim()).filter(Boolean), 'rule');
       moved++;
     } catch (e) {
       errors.push(`${ch.name}：${(e as Error).message}`);

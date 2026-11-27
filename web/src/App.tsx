@@ -8,9 +8,8 @@ import { Rules } from './pages/Rules';
 import { Groups } from './pages/Groups';
 import { SettingsPage } from './pages/Settings';
 import { Logs } from './pages/Logs';
-import { Folders } from './pages/Folders';
+import { Library } from './pages/Library';
 import { Ask } from './pages/Ask';
-import { Labels } from './pages/Labels';
 import { Storages } from './pages/Storages';
 import { Users } from './pages/Users';
 import { Login } from './pages/Login';
@@ -25,13 +24,12 @@ interface NavItem {
 const MAIN: NavItem[] = [
   { to: '/', label: '總覽', icon: 'home' },
   { to: '/files', label: '全部檔案', icon: 'files' },
+  { to: '/library', label: '整理', icon: 'layers' },
   { to: '/ask', label: '問 AI', icon: 'ai' },
 ];
 const SYSTEM: NavItem[] = [
-  { to: '/folders', label: '資料夾管理', icon: 'folder' },
   { to: '/rules', label: '分類規則', icon: 'rules' },
   { to: '/groups', label: '群組設定', icon: 'groups' },
-  { to: '/labels', label: '專案與標籤', icon: 'tag' },
   { to: '/storages', label: '雲端設定', icon: 'cloud' },
   { to: '/logs', label: '歸檔紀錄', icon: 'history' },
   { to: '/users', label: '成員與權限', icon: 'users', admin: true },
@@ -40,8 +38,8 @@ const SYSTEM: NavItem[] = [
 const BOTTOM: NavItem[] = [
   { to: '/', label: '總覽', icon: 'home' },
   { to: '/files', label: '檔案', icon: 'files' },
+  { to: '/library', label: '整理', icon: 'layers' },
   { to: '/ask', label: '問 AI', icon: 'ai' },
-  { to: '/rules', label: '規則', icon: 'rules' },
   { to: '/more', label: '更多', icon: 'more' },
 ];
 
@@ -210,10 +208,11 @@ export function App() {
   let page;
   if (path.startsWith('/files')) page = <Files />;
   else if (path.startsWith('/ask')) page = <Ask />;
-  else if (path.startsWith('/folders')) page = <Folders />;
+  else if (path.startsWith('/library')) page = <Library />;
+  else if (path.startsWith('/folders')) page = <Library />;
+  else if (path.startsWith('/labels')) page = <Library />;
   else if (path.startsWith('/rules')) page = <Rules />;
   else if (path.startsWith('/groups')) page = <Groups />;
-  else if (path.startsWith('/labels')) page = <Labels />;
   else if (path.startsWith('/storages')) page = <Storages />;
   else if (path.startsWith('/users')) page = <Users />;
   else if (path.startsWith('/logs')) page = <Logs />;
@@ -264,7 +263,7 @@ export function App() {
         </main>
         <nav className="bottom-nav" aria-label="主選單">
           {BOTTOM.map((n) => (
-            <Link key={n.to} to={n.to} className={active(n.to) || (n.to === '/more' && SYSTEM.some((s) => s.to !== '/rules' && active(s.to))) ? 'active' : ''}>
+            <Link key={n.to} to={n.to} className={active(n.to) || (n.to === '/more' && SYSTEM.some((s) => active(s.to))) ? 'active' : ''}>
               <Icon name={n.icon} />
               {n.label}
             </Link>

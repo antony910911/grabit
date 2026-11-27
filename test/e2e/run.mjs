@@ -284,8 +284,20 @@ try {
   r = await patch('/api/storages/1', { root_folder: 'GrabIt 檔案' });
   check('專屬資料夾改名（檔案不用搬）', (await drive()).every((p) => p.startsWith('GrabIt 檔案/')), JSON.stringify(await drive()));
 
-  // 資料夾被刪掉（或舊版散落的檔案）→ 自動建立新的專屬資料夾，並可以把舊檔整理進來
+  // 資料夾被刪掉：不會自動另開新資料夾，而是暫停並提示；使用者決定重建後再把舊檔整理進來
+  check('雲端硬碟沒有多餘的 GrabIt 資料夾', st.extraFolders === 0, JSON.stringify(st));
   await fetch(BASE + '/api/__drive/trash-roots');
+  st = (await api('/api/storages')).body.items[0];
+  check('偵測到專屬資料夾被刪除', st.rootMissing === true, JSON.stringify(st));
+  const fdLost = new FormData();
+  fdLost.append('file', new Blob(['while missing'], { type: 'text/plain' }), '資料夾不見時.txt');
+  const lost = await (await fetch(`${BASE}/api/upload`, { method: 'POST', body: fdLost, headers: { Cookie: COOKIE } })).json();
+  const rootsNow = new Set((await (await fetch(BASE + '/api/__drive')).json()).filter((f) => !f.rootTrashed && !f.trashed).map((f) => f.root));
+  check('資料夾不見時不會偷偷建立新的', lost.status === 'failed' && /專屬資料夾/.test(lost.error ?? '') && rootsNow.size === 0, JSON.stringify({ lost, roots: [...rootsNow] }));
+  r = await post('/api/storages/1/recreate-root', {});
+  check('使用者按下後重新建立專屬資料夾', r.status === 200 && !!r.body?.folderLink, JSON.stringify(r.body));
+  r = await post('/api/storages/1/recreate-root', {});
+  check('資料夾還在時不能重複建立', r.status === 400);
   let moved = 0;
   for (let i = 0; i < 10; i++) {
     r = await post('/api/storages/1/consolidate', {});
@@ -294,17 +306,34 @@ try {
   }
   st = (await api('/api/storages')).body.items[0];
   const after = (await (await fetch(BASE + '/api/__drive')).json()).filter((f) => !f.trashed);
-  check('舊檔整理到新的專屬資料夾', moved > 0 && st.filesOutside === 0 && st.folderLink.split('/').pop() !== rootId && after.every((f) => !f.rootTrashed && f.root === st.folderLink.split('/').pop()), JSON.stringify({ moved, st, after: after.slice(0, 3) }));
+  check('舊檔整理到新的專屬資料夾', moved > 0 && st.filesOutside === 0 && !st.rootMissing && st.folderLink.split('/').pop() !== rootId && after.every((f) => !f.rootTrashed && f.root === st.folderLink.split('/').pop()), JSON.stringify({ moved, st, after: after.slice(0, 3) }));
   const fd2 = new FormData();
   fd2.append('file', new Blob(['after root change'], { type: 'text/plain' }), '新根目錄測試.txt');
   await fetch(`${BASE}/api/upload`, { method: 'POST', body: fd2, headers: { Cookie: COOKIE } });
   const latest = (await (await fetch(BASE + '/api/__drive')).json()).find((f) => f.path.endsWith('新根目錄測試.txt'));
   check('之後的新檔案也放進新的專屬資料夾', latest?.root === st.folderLink.split('/').pop(), JSON.stringify(latest));
+
+  // ---------- 專案與標籤 ----------
+  const proj2 = (await post('/api/projects', { name: '沼氣計畫' })).body.id;
+  r = await post('/api/files/bulk', { ids: [f2.id, f4.id], projectId: proj2, addTags: ['重要', '待讀'] });
+  const pf = (await api(`/api/files?project=${proj2}`)).body.items;
+  check('批次加入專案與標籤', r.body?.updated === 2 && pf.length === 2 && pf.every((f) => f.tags.some((t) => t.name === '重要')), JSON.stringify(pf.map((f) => [f.original_name, f.tags.map((t) => t.name)])));
+  r = await post('/api/files/bulk', { ids: [f2.id], removeTags: ['待讀'], projectId: null });
+  const f2now = (await api(`/api/files/${f2.id}`)).body;
+  check('批次移除標籤與移出專案', f2now.project_id === null && f2now.tags.every((t) => t.name !== '待讀'), JSON.stringify(f2now.tags));
+  const untagged = (await api('/api/files?tag=none')).body.items;
+  check('篩選還沒有標籤的檔案', untagged.every((f) => f.tags.length === 0) && untagged.length > 0);
+  await patch('/api/groups/Cgroup1', { project_id: proj2 });
+  r = await post('/api/groups/Cgroup1/apply-project', {});
+  const grp = (await api('/api/groups')).body.items.find((g) => g.id === 'Cgroup1');
+  check('群組預設專案套用到現有檔案（不覆蓋其他專案）', r.body?.updated > 0 && (await api(`/api/files/${f1.id}`)).body.project_name === 'Farnesene', JSON.stringify({ r: r.body, grp: grp?.outside_project }));
+  await patch('/api/groups/Cgroup1', { project_id: null });
+
   const dl = await fetch(`${BASE}/api/files/${f1.id}/download`, { headers: { Cookie: COOKIE } });
   check('透過 GrabIt 下載（依 GrabIt 權限）', dl.ok && (await dl.text()) === 'farnesene gc data' && /attachment/.test(dl.headers.get('content-disposition') ?? ''));
 
   r = await api('/api/stats');
-  check('統計', r.body?.archived >= 9 && r.body.failed === 1 && r.body.groups === 1, JSON.stringify(r.body));
+  check('統計', r.body?.archived >= 9 && r.body.failed === 2 && r.body.groups === 1, JSON.stringify(r.body));
   r = await post(`/api/files/${f9.id}/retry`, {});
   check('失敗檔案可以重試', r.status === 200);
   r = await api('/api/operations');

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api, type Group, type Project, type Storage, type User } from '../api';
 import { Empty, ErrorBox, Loading, ProjectBadge, Sheet, SourceIcon, Switch } from '../components';
-import { formatBytes, formatTime, Link, useLoad, useMe, useToast } from '../lib';
+import { ask, formatBytes, formatTime, Link, useLoad, useMe, useToast } from '../lib';
 
 const TYPE_LABEL: Record<string, string> = { group: 'LINE 群組', room: '多人聊天', user: '一對一', email: 'Email', upload: '手動上傳' };
 const FILE_TYPES: [string, string][] = [
@@ -19,6 +19,16 @@ export function Groups() {
   const [edit, setEdit] = useState<Group | null>(null);
   const admin = me?.role === 'admin';
   const pending = data?.items.filter((g) => !g.configured) ?? [];
+  const toast = useToast();
+  const applyProject = async (g: Group) => {
+    try {
+      const r = await api<{ updated: number }>(`/groups/${encodeURIComponent(g.id)}/apply-project`, { method: 'POST', json: {} });
+      toast(`已把 ${r.updated} 個檔案加入「${g.project_name}」`);
+      reload();
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    }
+  };
 
   return (
     <>
@@ -77,6 +87,14 @@ export function Groups() {
                     {g.ai_enabled ? <span>✨ AI 分類</span> : <span className="muted">AI 關閉</span>}
                     {g.members.length > 0 && <span>👥 {g.members.length} 位成員可看</span>}
                   </div>
+                  {g.project_id && g.outside_project > 0 && admin && (
+                    <div className="notice info small" style={{ margin: '10px 0 0' }}>
+                      <span className="grow">有 {g.outside_project} 個之前收到的檔案還沒加入「{g.project_name}」。</span>
+                      <button className="btn sm" onClick={() => applyProject(g)}>
+                        加入專案
+                      </button>
+                    </div>
+                  )}
                 </div>
                 {admin && (
                   <button className={`btn sm ${g.configured ? '' : 'primary'}`} onClick={() => setEdit(g)}>
@@ -134,6 +152,14 @@ function GroupSettings({ group, onClose, onSaved }: { group: Group; onClose: () 
         },
       });
       toast('群組設定已儲存');
+      // 換了預設專案：問要不要把現有檔案也加進去（預設專案原本只影響之後收到的檔案）
+      if (g.project_id && g.project_id !== group.project_id && group.file_count > 0) {
+        const name = projects.data?.items.find((p) => p.id === g.project_id)?.name ?? '這個專案';
+        if (await ask(`要把這個群組現有的 ${group.file_count} 個檔案也加入「${name}」嗎？（已經在其他專案的檔案不會被改動）`, '加入專案')) {
+          const r = await api<{ updated: number }>(`/groups/${encodeURIComponent(group.id)}/apply-project`, { method: 'POST', json: {} });
+          toast(`已把 ${r.updated} 個檔案加入「${name}」`);
+        }
+      }
       onSaved();
     } catch (e) {
       toast((e as Error).message, 'error');
@@ -193,7 +219,7 @@ function GroupSettings({ group, onClose, onSaved }: { group: Group; onClose: () 
       </label>
       <label className="field">
         <span>預設專案</span>
-        <select className="select" value={g.project_id ?? ''} onChange={(e) => set('project_id', e.target.value ? Number(e.target.value) : null)}>
+        <select className="select" value={g.project_id ?? ''} onChange={(e) => set('project_id', e.target.value ? Number(e.target.value) : null)} aria-describedby="project-hint">
           <option value="">不指定</option>
           {projects.data?.items.map((p) => (
             <option key={p.id} value={p.id}>
@@ -201,6 +227,7 @@ function GroupSettings({ group, onClose, onSaved }: { group: Group; onClose: () 
             </option>
           ))}
         </select>
+        <small id="project-hint">這個群組之後收到的檔案會自動加入這個專案。</small>
       </label>
       <label className="field">
         <span>指定儲存資料夾（沒有規則符合時）</span>

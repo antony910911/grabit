@@ -380,6 +380,7 @@ manage.get('/groups', async (c) => {
   const r = await c.env.DB.prepare(
     `SELECT g.*, s.name AS storage_name, p.name AS project_name,
        (SELECT COUNT(*) FROM files f WHERE f.group_id = g.id AND f.status = 'done') AS file_count,
+       (SELECT COUNT(*) FROM files f WHERE f.group_id = g.id AND f.status = 'done' AND (g.project_id IS NULL OR f.project_id IS NOT g.project_id)) AS outside_project,
        (SELECT COALESCE(SUM(size), 0) FROM files f WHERE f.group_id = g.id AND f.status = 'done') AS bytes,
        (SELECT MAX(received_at) FROM files f WHERE f.group_id = g.id) AS last_file_at,
        (SELECT json_group_array(email) FROM user_groups ug WHERE ug.group_id = g.id) AS members_json
@@ -445,6 +446,22 @@ manage.patch('/groups/:id', async (c) => {
   return c.json({ ok: true });
 });
 
+/** 把群組的預設專案套用到這個群組現有、還沒有專案的檔案 */
+manage.post('/groups/:id/apply-project', async (c) => {
+  const user = need(c, 'editor');
+  const g = await getGroup(c.env, c.req.param('id'));
+  if (!g || !canSeeGroup(user, g.id)) throw notFound('找不到群組');
+  if (!g.project_id) throw bad('這個群組沒有設定預設專案');
+  const { overwrite } = await readJson<{ overwrite?: boolean }>(c);
+  const r = await c.env.DB.prepare(
+    `UPDATE files SET project_id = ?, updated_at = datetime('now') WHERE group_id = ? AND status IN ('done', 'duplicate') ${overwrite ? '' : 'AND project_id IS NULL'}`,
+  )
+    .bind(g.project_id, g.id)
+    .run();
+  await log(c.env, 'info', 'group', `${user.email} 把群組「${g.alias || g.name}」的 ${r.meta.changes ?? 0} 個檔案加入預設專案`);
+  return c.json({ updated: r.meta.changes ?? 0 });
+});
+
 // ---------- 雲端空間 ----------
 
 const SHARE_MODES: ShareMode[] = ['private', 'members', 'anyone'];
@@ -474,13 +491,21 @@ manage.get('/storages', async (c) => {
   const usage = (await c.env.DB.prepare("SELECT storage_id, COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM files WHERE status = 'done' GROUP BY storage_id").all<{ storage_id: number; n: number; bytes: number }>()).results;
   const types = (['gdrive', 'onedrive', 'dropbox', 'webdav'] as StorageType[]).map((t) => ({ type: t, label: STORAGE_LABEL[t], configured: t === 'webdav' || oauthConfigured(c.env, t) }));
   const outside = new Map<number, number>();
-  for (const r of rows) if (r.type === 'gdrive' && driveConfig(r).root_id) outside.set(r.id, await filesOutsideRoot(c.env, r));
+  const status = new Map<number, { missing: boolean; extras: number }>();
+  for (const r of rows) {
+    if (r.type !== 'gdrive' || !storageReady(r)) continue;
+    if (driveConfig(r).root_id) outside.set(r.id, await filesOutsideRoot(c.env, r));
+    const st = await new GoogleDrive({ env: c.env, row: r }).rootStatus().catch(() => null);
+    if (st) status.set(r.id, { missing: st.missing, extras: st.extras.length });
+  }
   return c.json({
     items: rows.map((r) => ({
       ...publicStorage(r),
       files: usage.find((u) => u.storage_id === r.id)?.n ?? 0,
       bytes: usage.find((u) => u.storage_id === r.id)?.bytes ?? 0,
       filesOutside: outside.get(r.id) ?? 0,
+      rootMissing: status.get(r.id)?.missing ?? false,
+      extraFolders: status.get(r.id)?.extras ?? 0,
     })),
     types,
     redirectBase: new URL(c.req.url).origin,
@@ -546,6 +571,19 @@ manage.patch('/storages/:id', async (c) => {
   }
   if (root && root !== row.root_folder) await new FolderCache(c.env, id).clear();
   return c.json({ ok: true });
+});
+
+/** 專屬資料夾被刪除時，由使用者決定重新建立 */
+manage.post('/storages/:id/recreate-root', async (c) => {
+  const user = need(c, 'admin');
+  const row = await c.env.DB.prepare("SELECT * FROM storages WHERE id = ? AND type = 'gdrive'").bind(intParam(c)).first<StorageRow>();
+  if (!row) throw notFound('找不到 Google Drive 空間');
+  const drive = new GoogleDrive({ env: c.env, row });
+  const st = await drive.rootStatus();
+  if (!st.missing) throw bad('專屬資料夾還在，不需要重新建立');
+  const id = await drive.rootId({ create: true });
+  await log(c.env, 'info', 'storage', `${user.email} 重新建立「${row.name}」的專屬資料夾`);
+  return c.json({ ok: true, folderLink: gdriveFolderLink(id) });
 });
 
 /** 把散落在舊位置的檔案搬進 Google Drive 專屬資料夾（每次一批，前端會重複呼叫直到完成） */
