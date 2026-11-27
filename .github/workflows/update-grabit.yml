@@ -1,0 +1,35 @@
+# 給用「Deploy to Cloudflare」按鈕架設 GrabIt 的人：
+# 到 GitHub 倉庫的 Actions 分頁 → 「更新 GrabIt 到最新版」→ Run workflow，
+# 就會把原作者的最新程式碼抓下來，保留你自己的資料庫 ID、Worker 名稱和佇列名稱，推上去後 Cloudflare 會自動重新部署。
+# 你的檔案、規則、成員都存在你的 D1 資料庫和雲端硬碟裡，不會被動到；資料表的變更會在部署時自動套用。
+name: 更新 GrabIt 到最新版
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    # 原作者的倉庫本身不需要跑
+    if: github.repository != 'antony910911/grabit'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下載最新版（保留你的資料庫與 Worker 設定）
+        run: bash .github/scripts/sync-upstream.sh
+
+      - name: 存檔並推上去（Cloudflare 會自動重新部署）
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "已經是最新版，不用更新。" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -m "更新 GrabIt 到最新版"
+          git push
+          echo "✅ 更新完成，Cloudflare 會在幾分鐘內自動重新部署。" >> "$GITHUB_STEP_SUMMARY"

@@ -102,6 +102,8 @@ try {
 
   // ---------- Google 登入 ----------
   check('未登入時管理 API 回 401', (await api('/api/me')).status === 401);
+  const setupRes = await api('/auth/setup');
+  check('設定完成後，第一次設定清單只回傳 ready（不透露設定細節）', setupRes.status === 200 && JSON.stringify(setupRes.body) === '{"ready":true}', JSON.stringify(setupRes.body));
   check('未登入時雲端授權路徑被擋下', (await fetch(`${BASE}/oauth/gdrive/start?storage=1`, { redirect: 'manual' })).status === 401);
   check('未登入時上傳被擋下', (await fetch(`${BASE}/api/upload`, { method: 'POST', body: new FormData() })).status === 401);
 
@@ -360,6 +362,16 @@ try {
   COOKIE = pair(E.session);
   check('外觀設定是每個人自己的', (await api('/api/me')).body.prefs?.palette === 'indigo');
   check('編輯者只看得到被授權的群組', (await api('/api/files')).body.items.every((f) => f.group_id === 'Cgroup1') && (await api('/api/files')).body.items.length > 0);
+  // 雲端連結只給打得開的人；其他人用 GrabIt 下載
+  const ef = (await api('/api/files')).body.items.find((f) => f.status === 'done');
+  check('雲端沒分享給他時，不給「在雲端開啟」的連結', !!ef && ef.drive_link === null && (await api(`/api/files/${ef.id}`)).body.drive_link === null, JSON.stringify(ef));
+  const edl = await fetch(`${BASE}/api/files/${ef.id}/download`, { headers: { Cookie: COOKIE } });
+  check('沒有雲端權限也能透過 GrabIt 下載', edl.ok && (await edl.arrayBuffer()).byteLength > 0, String(edl.status));
+  const editorCookie = COOKIE;
+  COOKIE = adminCookie;
+  await patch('/api/storages/1', { share: 'members' });
+  COOKIE = editorCookie;
+  check('專屬資料夾分享給成員後，成員就看得到雲端連結', /^https:\/\/drive\.google\.com\//.test((await api(`/api/files/${ef.id}`)).body.drive_link ?? ''));
   COOKIE = adminCookie;
   r = await post('/api/users/viewer%40example.com/revoke-sessions', {});
   check('管理員強制登出成員', r.body?.revoked === 1, JSON.stringify(r.body));

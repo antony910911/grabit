@@ -1,8 +1,12 @@
-import { Brand } from '../components';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Brand, Icon } from '../components';
 import { currentUrl } from '../lib';
+import { Copy } from './Settings';
+
+type Setup = { ready: true } | { ready: false; google: boolean; admins: boolean; line: boolean; urls: { login: string; drive: string; webhook: string } };
 
 const ERRORS: Record<string, string> = {
-  config: '系統尚未設定 Google 登入（GOOGLE_CLIENT_ID／GOOGLE_CLIENT_SECRET），請聯絡管理員。',
+  config: '還沒設定 Google 登入（GOOGLE_CLIENT_ID／GOOGLE_CLIENT_SECRET）。照下面的「第一次設定」完成後再登入。',
   state: '登入流程已逾時或無效，請重新登入。',
   denied: '你取消了 Google 登入。',
   token: '無法向 Google 取得登入資訊，請稍後再試。',
@@ -22,7 +26,48 @@ function GoogleMark() {
   );
 }
 
+function Step({ done, children }: { done: boolean; children: ReactNode }) {
+  return (
+    <li className={done ? 'done' : ''}>
+      <span className="setup-mark" aria-label={done ? '已完成' : '還沒完成'}>{done ? <Icon name="check" /> : null}</span>
+      <div className="grow">{children}</div>
+    </li>
+  );
+}
+
+/** 第一次架設：列出要貼到 Google、LINE 的網址，設定好的項目自動打勾 */
+function FirstRun({ s }: { s: Extract<Setup, { ready: false }> }) {
+  return (
+    <div className="card setup-card">
+      <h2>第一次設定</h2>
+      <p className="muted small">GrabIt 已經上線了，再完成下面幾項就能登入。詳細圖文步驟請看<a href="/setup.html" target="_blank" rel="noopener">架設說明書</a>。</p>
+      <ol className="setup-list">
+        <Step done={s.google}>
+          <b>Google 登入</b>：在 Google Cloud 建立 OAuth 用戶端，「已授權的重新導向 URI」貼上這兩個網址，再把用戶端 ID 和密鑰設成 <code>GOOGLE_CLIENT_ID</code>、<code>GOOGLE_CLIENT_SECRET</code>。
+          <Copy text={s.urls.login} />
+          <Copy text={s.urls.drive} />
+        </Step>
+        <Step done={s.admins}>
+          <b>管理員</b>：在 Cloudflare 設定 <code>ADMIN_EMAILS</code>，填你要用來登入的 Google 帳號 email。
+        </Step>
+        <Step done={s.line}>
+          <b>LINE Bot</b>：設定 <code>LINE_CHANNEL_SECRET</code>、<code>LINE_CHANNEL_ACCESS_TOKEN</code>，再把這個網址貼到 LINE 的 Webhook URL。
+          <Copy text={s.urls.webhook} />
+        </Step>
+      </ol>
+      <p className="muted small">在 Cloudflare 存好之後，等幾秒再重新整理這一頁，完成的項目會打勾。</p>
+    </div>
+  );
+}
+
 export function Login({ message }: { message?: string | null }) {
+  const [setup, setSetup] = useState<Setup | null>(null);
+  useEffect(() => {
+    fetch('/auth/setup', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setSetup)
+      .catch(() => setSetup(null));
+  }, []);
   const url = currentUrl();
   const error = url.searchParams.get('error');
   const next = url.pathname === '/login' ? url.searchParams.get('next') ?? '/' : url.pathname + url.search;
@@ -43,6 +88,7 @@ export function Login({ message }: { message?: string | null }) {
           只有管理員加入的成員可以登入。登入只會讀取你的 Google 帳號 email 與名稱，不會存取你的 Google Drive。
         </p>
       </div>
+      {setup && !setup.ready && <FirstRun s={setup} />}
     </div>
   );
 }

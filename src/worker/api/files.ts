@@ -1,9 +1,10 @@
 // 檔案、資料夾、版本、重複檔案、上傳、下載、復原
 import { Hono } from 'hono';
 import { addTags, getFile, getGroup, log, type FileRow } from '../db';
-import { canSeeGroup, fileScope } from '../permissions';
+import { canSeeGroup, fileScope, type CurrentUser } from '../permissions';
 import { classifyFile, enqueueFile, DUPLICATE_FOLDER } from '../processor';
-import { getStorage, providerFor } from '../storage';
+import { getStorage, providerFor, type StorageRow } from '../storage';
+import { driveConfig } from '../storage/gdrive';
 import { indexFile, keywordCondition, semanticIds, type QueryParts } from '../search';
 import { learnFromMove } from '../learn';
 import { moveFile, renameFolder, undoBatch } from '../ops';
@@ -28,7 +29,7 @@ const CATEGORY_EXT: Record<string, string[]> = {
 
 export const FILE_SELECT = `SELECT f.id, f.group_id, f.sender_name, f.message_type, f.original_name, f.stored_name, f.ext, f.size, f.folder_path, f.drive_link,
   f.unsorted, f.manual, f.status, f.duplicate_of, f.error, f.attempts, f.received_at, f.storage_id, f.project_id, f.source, f.classified_by,
-  f.version_key, f.version_label, f.ai_summary, f.target_folder, f.matched_rule_id,
+  f.version_key, f.version_label, f.ai_summary, f.target_folder, f.matched_rule_id, f.root_ref,
   COALESCE(g.alias, g.name, f.group_id) AS group_name, r.name AS rule_name, p.name AS project_name, p.color AS project_color, s.name AS storage_name,
   (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color, 'source', ft.source)) FROM file_tags ft JOIN tags t ON t.id = ft.tag_id WHERE ft.file_id = f.id) AS tags_json,
   (SELECT COUNT(*) FROM files v WHERE v.version_key = f.version_key AND v.status = 'done') AS version_count
@@ -41,6 +42,34 @@ export const FILE_SELECT = `SELECT f.id, f.group_id, f.sender_name, f.message_ty
 export function shapeFile<T extends { tags_json?: string | null }>(row: T) {
   const { tags_json, ...rest } = row;
   return { ...rest, tags: tags_json ? (JSON.parse(tags_json) as unknown[]) : [] };
+}
+
+/**
+ * 這個人能不能直接打開雲端上的檔案（不經過 GrabIt）。
+ * 雲端連結是給「雲端帳號」用的：只有連接這個空間的帳號本人，或專屬資料夾有分享給他（分享給成員／知道連結的人），
+ * 打開才不會被拒絕。其他人一律透過 GrabIt 的下載與預覽，依 GrabIt 的群組權限判斷。
+ */
+export function canOpenInCloud(user: CurrentUser, storage: StorageRow | null | undefined, rootRef: string | null | undefined): boolean {
+  if (!storage) return false;
+  if (storage.account && storage.account.toLowerCase() === user.email.toLowerCase()) return true;
+  if (storage.type !== 'gdrive') return false;
+  const cfg = driveConfig(storage);
+  // 還沒搬進專屬資料夾的舊檔案不會繼承資料夾的分享
+  if (!cfg.root_id || rootRef !== cfg.root_id) return false;
+  return cfg.share === 'anyone' || (cfg.share === 'members' && !cfg.share_error);
+}
+
+/** 依目前使用者決定要不要給雲端連結；打不開的就不給，前端改顯示 GrabIt 的預覽與下載 */
+type CloudFields = { storage_id?: number | null; root_ref?: string | null; drive_link?: string | null };
+async function withCloudAccess<T extends CloudFields>(c: Ctx, rows: T[]) {
+  const ids = [...new Set(rows.map((r) => r.storage_id).filter((id): id is number => !!id))];
+  const storages = new Map<number, StorageRow>();
+  for (const id of ids) {
+    const s = await c.env.DB.prepare('SELECT * FROM storages WHERE id = ?').bind(id).first<StorageRow>();
+    if (s) storages.set(id, s);
+  }
+  const user = c.get('user');
+  return rows.map(({ root_ref, ...r }) => ({ ...r, drive_link: r.drive_link && canOpenInCloud(user, storages.get(r.storage_id ?? 0), root_ref) ? r.drive_link : null }));
 }
 
 async function visibleFile(c: Ctx, id: number): Promise<FileRow> {
@@ -122,7 +151,7 @@ files.get('/files', async (c) => {
   const rows = await c.env.DB.prepare(`${FILE_SELECT} WHERE ${parts.where.join(' AND ')} ORDER BY f.received_at DESC, f.id DESC LIMIT ? OFFSET ?`)
     .bind(...parts.binds, limit + 1, offset)
     .all<{ tags_json: string | null }>();
-  return c.json({ items: rows.results.slice(0, limit).map(shapeFile), hasMore: rows.results.length > limit });
+  return c.json({ items: await withCloudAccess(c, rows.results.slice(0, limit).map(shapeFile) as CloudFields[]), hasMore: rows.results.length > limit });
 });
 
 files.get('/files/:id', async (c) => {
@@ -145,8 +174,9 @@ files.get('/files/:id', async (c) => {
       .bind(file.id, file.duplicate_of ?? -1, file.id, ...scope.binds)
       .all()
   ).results;
+  const [shaped] = await withCloudAccess(c, [shapeFile(row!) as CloudFields]);
   return c.json({
-    ...shapeFile(row!),
+    ...shaped,
     content_excerpt: file.content_text?.slice(0, 1200) ?? null,
     ai_suggestion: file.ai_suggestion ? JSON.parse(file.ai_suggestion) : null,
     versions,
