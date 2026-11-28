@@ -55,21 +55,25 @@ export async function renameFolder(env: Env, storageId: number, from: string, to
   const storage = await getStorage(env, storageId);
   if (!storage) throw new Error('找不到雲端空間');
   await providerFor(env, storage).renameFolder(from, to);
-  const like = `${from}/%`;
+  // 不用 LIKE：D1 的 LIKE 樣式最多 50 bytes（中文約 16 個字），長的資料夾路徑會出錯；
+  // 名稱裡的 % 和 _ 也不會被當成萬用字元。長度用 SQLite 的 length() 算，中文、emoji 都正確。
   const r = await env.DB.prepare(
-    `UPDATE files SET folder_path = ? || substr(folder_path, ?), updated_at = datetime('now') WHERE storage_id = ? AND (folder_path = ? OR folder_path LIKE ?)`,
+    `UPDATE files SET folder_path = ? || substr(folder_path, length(?) + 1), updated_at = datetime('now')
+     WHERE storage_id = ? AND (folder_path = ? OR substr(folder_path, 1, length(?)) = ?)`,
   )
-    .bind(to, from.length + 1, storageId, from, like)
+    .bind(to, from, storageId, from, `${from}/`, `${from}/`)
     .run();
   // WebDAV 以路徑當識別碼，路徑變了要一起更新
   if (storage.type === 'webdav') {
     const oldPrefix = joinPath(storage.root_folder, from) + '/';
     const newPrefix = joinPath(storage.root_folder, to) + '/';
-    await env.DB.prepare('UPDATE files SET drive_file_id = ? || substr(drive_file_id, ?) WHERE storage_id = ? AND drive_file_id LIKE ?')
-      .bind(newPrefix, oldPrefix.length + 1, storageId, `${oldPrefix}%`)
+    await env.DB.prepare('UPDATE files SET drive_file_id = ? || substr(drive_file_id, length(?) + 1) WHERE storage_id = ? AND substr(drive_file_id, 1, length(?)) = ?')
+      .bind(newPrefix, oldPrefix, storageId, oldPrefix, oldPrefix)
       .run();
   }
-  await env.DB.prepare('UPDATE rules SET target_path = ? || substr(target_path, ?) WHERE target_path = ? OR target_path LIKE ?').bind(to, from.length + 1, from, like).run();
+  await env.DB.prepare('UPDATE rules SET target_path = ? || substr(target_path, length(?) + 1) WHERE target_path = ? OR substr(target_path, 1, length(?)) = ?')
+    .bind(to, from, from, `${from}/`, `${from}/`)
+    .run();
   if (opts.record !== false) {
     await env.DB.prepare(
       "INSERT INTO operations (batch_id, file_id, action, from_folder, to_folder, description, user_email, to_name) VALUES (?, 0, 'rename_folder', ?, ?, ?, ?, ?)",
@@ -77,7 +81,9 @@ export async function renameFolder(env: Env, storageId: number, from: string, to
       .bind(opts.batchId, from, to, opts.description, opts.userEmail, String(storageId))
       .run();
   }
-  const ids = await env.DB.prepare('SELECT id FROM files WHERE storage_id = ? AND (folder_path = ? OR folder_path LIKE ?)').bind(storageId, to, `${to}/%`).all<{ id: number }>();
+  const ids = await env.DB.prepare('SELECT id FROM files WHERE storage_id = ? AND (folder_path = ? OR substr(folder_path, 1, length(?)) = ?)')
+    .bind(storageId, to, `${to}/`, `${to}/`)
+    .all<{ id: number }>();
   for (const { id } of ids.results) await indexFile(env, id);
   return r.meta.changes ?? 0;
 }

@@ -68,7 +68,7 @@ export interface QueryParts {
   binds: unknown[];
 }
 
-/** 把關鍵字轉成 SQL 條件：三個字以上用全文索引，較短的用 LIKE */
+/** 把關鍵字轉成 SQL 條件：三個字以上用全文索引，較短的用 instr（D1 的 LIKE 樣式最多 50 bytes，長的中文關鍵字會出錯） */
 export async function keywordCondition(env: Env, q: string, parts: QueryParts, semantic: number[] = []): Promise<void> {
   const terms = q.trim().split(/\s+/).filter(Boolean).slice(0, 8);
   if (!terms.length) return;
@@ -81,11 +81,10 @@ export async function keywordCondition(env: Env, q: string, parts: QueryParts, s
   }
   for (const t of terms.filter((x) => !long.includes(x))) {
     conds.push(
-      `(f.original_name LIKE ? OR f.stored_name LIKE ? OR f.folder_path LIKE ? OR f.sender_name LIKE ? OR f.ai_summary LIKE ? OR f.content_text LIKE ?
-        OR EXISTS (SELECT 1 FROM file_tags ft JOIN tags t ON t.id = ft.tag_id WHERE ft.file_id = f.id AND t.name LIKE ?))`,
+      `(${['f.original_name', 'f.stored_name', 'f.folder_path', 'f.sender_name', 'f.ai_summary', 'f.content_text'].map((col) => `instr(lower(${col}), lower(?)) > 0`).join(' OR ')}
+        OR EXISTS (SELECT 1 FROM file_tags ft JOIN tags t ON t.id = ft.tag_id WHERE ft.file_id = f.id AND instr(lower(t.name), lower(?)) > 0))`,
     );
-    const like = `%${t}%`;
-    parts.binds.push(like, like, like, like, like, like, like);
+    parts.binds.push(t, t, t, t, t, t, t);
   }
   const keyword = conds.join(' AND ');
   if (semantic.length) {
@@ -101,16 +100,16 @@ export async function searchForAi(env: Env, scope: Scope, args: SearchArgs): Pro
   const parts: QueryParts = { where: ["f.status = 'done'", scope.sql], binds: [...scope.binds] };
   if (args.query) await keywordCondition(env, args.query, parts, await semanticIds(env, args.query));
   if (args.group) {
-    parts.where.push('(g.name LIKE ? OR g.alias LIKE ?)');
-    parts.binds.push(`%${args.group}%`, `%${args.group}%`);
+    parts.where.push('(instr(lower(g.name), lower(?)) > 0 OR instr(lower(g.alias), lower(?)) > 0)');
+    parts.binds.push(args.group, args.group);
   }
   if (args.project) {
-    parts.where.push('p.name LIKE ?');
-    parts.binds.push(`%${args.project}%`);
+    parts.where.push('instr(lower(p.name), lower(?)) > 0');
+    parts.binds.push(args.project);
   }
   if (args.tag) {
-    parts.where.push('EXISTS (SELECT 1 FROM file_tags ft JOIN tags t ON t.id = ft.tag_id WHERE ft.file_id = f.id AND t.name LIKE ?)');
-    parts.binds.push(`%${args.tag}%`);
+    parts.where.push('EXISTS (SELECT 1 FROM file_tags ft JOIN tags t ON t.id = ft.tag_id WHERE ft.file_id = f.id AND instr(lower(t.name), lower(?)) > 0)');
+    parts.binds.push(args.tag);
   }
   if (args.from) {
     parts.where.push('f.received_at >= ?');

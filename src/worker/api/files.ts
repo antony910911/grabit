@@ -143,9 +143,9 @@ files.get('/files', async (c) => {
     parts.binds.push(Number(q.storage));
   }
   if (q.folder) {
-    parts.where.push(q.recursive === '0' ? 'f.folder_path = ?' : '(f.folder_path = ? OR f.folder_path LIKE ?)');
+    parts.where.push(q.recursive === '0' ? 'f.folder_path = ?' : '(f.folder_path = ? OR substr(f.folder_path, 1, length(?)) = ?)');
     parts.binds.push(q.folder);
-    if (q.recursive !== '0') parts.binds.push(`${q.folder}/%`);
+    if (q.recursive !== '0') parts.binds.push(`${q.folder}/`, `${q.folder}/`);
   }
   if (q.type && CATEGORY_EXT[q.type]) {
     const exts = CATEGORY_EXT[q.type]!;
@@ -179,8 +179,8 @@ files.get('/uploaders', async (c) => {
   const where = ["f.status NOT IN ('deleted', 'skipped')", scope.sql];
   const binds: unknown[] = [...scope.binds];
   if (q) {
-    where.push('(u.alias LIKE ? OR u.display_name LIKE ?)');
-    binds.push(`%${q}%`, `%${q}%`);
+    where.push('(instr(lower(u.alias), lower(?)) > 0 OR instr(lower(u.display_name), lower(?)) > 0)');
+    binds.push(q, q);
   }
   const rows = await c.env.DB.prepare(
     `SELECT f.uploader_key AS key, u.source, u.display_name, u.alias, COUNT(*) AS count, COUNT(DISTINCT f.group_id) AS groups,
@@ -594,8 +594,8 @@ files.post('/folders/rename', async (c) => {
   const dst = cleanFolderPath(to);
   if (src === dst) throw bad('名稱沒有改變');
   if (dst.startsWith(`${src}/`)) throw bad('不能把資料夾移到自己裡面');
-  const exists = await c.env.DB.prepare("SELECT 1 FROM files WHERE storage_id = ? AND status = 'done' AND (folder_path = ? OR folder_path LIKE ?) LIMIT 1")
-    .bind(storageId, dst, `${dst}/%`)
+  const exists = await c.env.DB.prepare("SELECT 1 FROM files WHERE storage_id = ? AND status = 'done' AND (folder_path = ? OR substr(folder_path, 1, length(?)) = ?) LIMIT 1")
+    .bind(storageId, dst, `${dst}/`, `${dst}/`)
     .first();
   if (exists) throw bad('目標資料夾已經有檔案，請改用「移動檔案」或換一個名稱');
   const batchId = newBatchId();

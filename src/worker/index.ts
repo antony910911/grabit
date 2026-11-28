@@ -8,6 +8,7 @@ import { HttpError, need, type AppEnv } from './api/util';
 import { handleWebhook } from './webhook';
 import { handleQueue, retryPending } from './processor';
 import { retryAi } from './ai-job';
+import { publicPages } from './public';
 import { handleEmail } from './ingest';
 import { buildAuthUrl, exchangeCode, OAUTH } from './storage/oauth';
 import { FolderCache } from './storage/cache';
@@ -106,6 +107,8 @@ app.get('/oauth/:type/callback', async (c) => {
 });
 
 app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404));
+// 不需要登入的公開頁面（關於、隱私權政策、服務條款）與 Google 網站擁有權驗證
+app.route('/', publicPages);
 app.all('*', (c) => (c.env.ASSETS ? c.env.ASSETS.fetch(c.req.raw) : c.notFound()));
 
 export default {

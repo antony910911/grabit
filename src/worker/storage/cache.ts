@@ -28,9 +28,9 @@ export class FolderCache {
 
   async renamePrefix(oldPath: string, newPath: string): Promise<void> {
     await this.env.DB.prepare(
-      `UPDATE OR REPLACE storage_folders SET path = ? || substr(path, ?) WHERE storage_id = ? AND (path = ? OR path LIKE ?)`,
+      `UPDATE OR REPLACE storage_folders SET path = ? || substr(path, length(?) + 1) WHERE storage_id = ? AND (path = ? OR substr(path, 1, length(?)) = ?)`,
     )
-      .bind(newPath, oldPath.length + 1, this.storageId, oldPath, `${oldPath}/%`)
+      .bind(newPath, oldPath, this.storageId, oldPath, `${oldPath}/`, `${oldPath}/`)
       .run();
   }
 

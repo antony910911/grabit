@@ -655,3 +655,5 @@ input[type='range'] { width: 100%; accent-color: var(--accent); }
 :root[data-font='xl'] { --fs: 1.25; }
 /* 手機上輸入框至少 16px，避免 iPhone 點進輸入框時自動放大畫面 */
 @media (pointer: coarse) { .input, .select, textarea.input { font-size: max(16px, calc(15px * var(--fs))); } }
+.login-links { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+.login-links a { color: var(--muted); }
