@@ -241,6 +241,31 @@ try {
   check('資料夾改名後規則路徑同步', rules.some((x) => x.target_path === '行政/會議紀錄/{yyyy}-{MM}'), JSON.stringify(rules.map((x) => x.target_path)));
   check('Drive 資料夾已改名', (await drive()).includes('LINE FileHub/行政/會議紀錄/2026-11/20261127_週會會議紀錄.docx'), JSON.stringify(await drive()));
 
+  // 很長的中文資料夾名稱（超過 D1 的 LIKE 上限 50 bytes），名稱裡還有 % 和 _，不能被當成萬用字元
+  const LONG = '研究專案_鳳梨皮汁醱酵條件優化與產量提升計畫_100%完成';
+  const DECOY = '研究專案-鳳梨皮汁醱酵條件優化與產量提升計畫_100%完成'; // 只差一個字元：舊的 LIKE 會把 _ 當成任意字元而誤配
+  const uploadTo = async (folder, name, text) => {
+    const fd = new FormData();
+    fd.append('file', new Blob([text], { type: 'text/plain' }), name);
+    fd.append('folder', folder);
+    return (await fetch(`${BASE}/api/upload`, { method: 'POST', body: fd, headers: { Cookie: COOKIE } })).json();
+  };
+  const upLong = await uploadTo(`${LONG}/子資料夾`, '長路徑測試.txt', 'long path file');
+  const upDecoy = await uploadTo(`${DECOY}/子資料夾`, '相似路徑.txt', 'decoy file');
+  check('檔案可以放進很長的中文資料夾', upLong.folder === `${LONG}/子資料夾` && upDecoy.folder === `${DECOY}/子資料夾`, JSON.stringify([upLong, upDecoy]));
+  r = await api(`/api/files?limit=200&folder=${encodeURIComponent(LONG)}`);
+  check('依很長的資料夾篩選（含子資料夾）不會出錯，也不會混進名稱相似的資料夾', r.status === 200 && r.body.items.length === 1 && r.body.items[0].original_name === '長路徑測試.txt', JSON.stringify([r.status, r.body?.error, r.body?.items?.map((f) => f.folder_path)]));
+  r = await post('/api/folders/rename', { storageId: 1, from: LONG, to: '研究專案/鳳梨皮汁醱酵' });
+  const longFile = (await api(`/api/files/${upLong.id}`)).body;
+  const decoyFile = (await api(`/api/files/${upDecoy.id}`)).body;
+  check('很長的中文資料夾可以改名，子資料夾一起搬', r.status === 200 && r.body.moved === 1 && longFile.folder_path === '研究專案/鳳梨皮汁醱酵/子資料夾', JSON.stringify([r.status, r.body, longFile.folder_path]));
+  check('名稱只差一個字的資料夾不受影響', decoyFile.folder_path === `${DECOY}/子資料夾`, decoyFile.folder_path);
+  check('Drive 上的長名稱資料夾也改好了', (await drive()).some((p) => p.endsWith('研究專案/鳳梨皮汁醱酵/子資料夾/長路徑測試.txt')), JSON.stringify((await drive()).filter((p) => p.includes('鳳梨'))));
+  const undoLong = await post(`/api/operations/${r.body.batchId}/undo`, {});
+  check('長名稱資料夾改名可以復原', undoLong.status === 200 && (await api(`/api/files/${upLong.id}`)).body.folder_path === `${LONG}/子資料夾`, JSON.stringify(undoLong.body));
+  r = await api(`/api/files?limit=200&q=${encodeURIComponent('鳳梨皮汁醱酵條件優化與產量提升計畫')}`);
+  check('用很長的中文關鍵字搜尋不會出錯', r.status === 200, JSON.stringify([r.status, r.body?.error]));
+
   // 版本管理
   await webhook([ev('v1', 'file', '期末報告_v1.docx'), ev('v2', 'file', '期末報告_v2.docx'), ev('v3', 'file', '期末報告_Final.docx')]);
   files = await waitIdle(11);
